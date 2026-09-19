@@ -1,4 +1,5 @@
 .env
 *.db
+!transactions.db
 __pycache__/
 .venv/

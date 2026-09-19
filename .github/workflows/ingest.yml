@@ -1,0 +1,48 @@
+name: Ingest ticket emails
+
+on:
+  schedule:
+    # 09:00 UTC daily — off-peak for the connected Gmail account.
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run ingestion
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          before=$(sqlite3 transactions.db "SELECT COUNT(*) FROM transactions;" 2>/dev/null || echo 0)
+          python ingest.py
+          after=$(sqlite3 transactions.db "SELECT COUNT(*) FROM transactions;" 2>/dev/null || echo 0)
+          echo "NEW_COUNT=$((after - before))" >> "$GITHUB_ENV"
+
+      - name: Commit and push updated database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f transactions.db
+          if git diff --cached --quiet; then
+            echo "No changes to transactions.db; nothing to commit."
+          else
+            git commit -m "chore: ingest run $(date -u +%Y-%m-%d) (${NEW_COUNT} new transactions)"
+            git push
+          fi
