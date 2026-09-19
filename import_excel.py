@@ -124,6 +124,7 @@ def import_bl(ws):
             "needs_review": False,
             "review_reason": None,
             "raw_email_uid": uid,
+            "source": "excel",
         }
         save_transaction(data)
         inserted += 1
@@ -172,6 +173,7 @@ def import_sl(ws):
             "needs_review": False,
             "review_reason": None,
             "raw_email_uid": uid,
+            "source": "excel",
         }
         save_transaction(data)
         inserted += 1

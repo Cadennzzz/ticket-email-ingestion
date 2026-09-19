@@ -94,10 +94,12 @@ def load_data():
     conn = get_connection()
     conn.row_factory = sqlite3.Row
     try:
+        # Only the canonical (Excel-sourced) dataset is exported. Scraped
+        # emails (source='email') stay isolated until explicitly promoted.
         buys = [
             dict(r)
             for r in conn.execute(
-                "SELECT * FROM transactions WHERE transaction_type = 'buy'"
+                "SELECT * FROM transactions WHERE transaction_type = 'buy' AND source = 'excel'"
             ).fetchall()
         ]
 
@@ -111,6 +113,7 @@ def load_data():
                            s.purchase_date AS sell_purchase_date
                     FROM matches m
                     JOIN transactions s ON s.id = m.sell_id
+                    WHERE s.source = 'excel'
                     """
                 ).fetchall()
             ]

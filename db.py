@@ -35,9 +35,20 @@ CREATE TABLE IF NOT EXISTS transactions (
     needs_review BOOLEAN NOT NULL DEFAULT 0,
     review_reason TEXT,
     raw_email_uid TEXT UNIQUE NOT NULL,
-    processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    source TEXT NOT NULL DEFAULT 'email',
+    promoted BOOLEAN NOT NULL DEFAULT 0
 );
 """
+
+# Columns added after the original schema shipped. Each is added via
+# ALTER TABLE on existing databases the first time get_connection() sees
+# them missing (see _migrate). New databases get them from SCHEMA above
+# directly, so the ALTER is a no-op there.
+_MIGRATIONS = [
+    ("source", "TEXT NOT NULL DEFAULT 'email'"),
+    ("promoted", "BOOLEAN NOT NULL DEFAULT 0"),
+]
 
 COLUMNS = [
     "is_ticket_transaction",
@@ -63,12 +74,33 @@ COLUMNS = [
     "needs_review",
     "review_reason",
     "raw_email_uid",
+    "source",
 ]
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(transactions)").fetchall()}
+    for name, ddl in _MIGRATIONS:
+        if name in existing_cols:
+            continue
+        conn.execute(f"ALTER TABLE transactions ADD COLUMN {name} {ddl}")
+        if name == "source":
+            # Backfill: rows inserted by import_excel.py are identifiable by
+            # their raw_email_uid prefix. Everything else keeps the 'email'
+            # default, which is already correct for them.
+            conn.execute(
+                """
+                UPDATE transactions
+                SET source = 'excel'
+                WHERE raw_email_uid LIKE 'excel-bl-%' OR raw_email_uid LIKE 'excel-sl-%'
+                """
+            )
 
 
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute(SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
 

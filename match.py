@@ -57,12 +57,15 @@ def normalize_event(name: str) -> str:
 
 
 def load_rows(conn):
+    # Only the canonical (Excel-sourced) dataset participates in matching.
+    # Scraped emails (source='excel' vs 'email') stay isolated until
+    # explicitly promoted — see review_pending.py.
     cur = conn.execute(
         """
         SELECT id, transaction_type, artist_or_event, venue, event_date,
                quantity, price_per_ticket, total_price, purchase_date
         FROM transactions
-        WHERE transaction_type IN ('buy', 'sell')
+        WHERE transaction_type IN ('buy', 'sell') AND source = 'excel'
         """
     )
     columns = [d[0] for d in cur.description]

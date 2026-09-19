@@ -64,9 +64,17 @@ if df.empty:
 df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
 df["total_price"] = pd.to_numeric(df["total_price"], errors="coerce")
 df["needs_review"] = df["needs_review"].astype(bool)
+df["source"] = df["source"].fillna("email")
+df["promoted"] = df["promoted"].fillna(0).astype(bool)
 
-buys = df[df["transaction_type"] == "buy"]
-sells = df[df["transaction_type"] == "sell"]
+# Real metrics (header, time series, platform breakdown) only reflect the
+# canonical Excel-sourced dataset. Scraped emails (source='email') are
+# captured for review but excluded here until explicitly promoted.
+excel_df = df[df["source"] == "excel"].copy()
+pending_count = int(((df["source"] == "email") & (~df["promoted"])).sum())
+
+buys = excel_df[excel_df["transaction_type"] == "buy"]
+sells = excel_df[excel_df["transaction_type"] == "sell"]
 
 total_bought = buys["quantity"].sum()
 total_sold = sells["quantity"].sum()
@@ -87,6 +95,12 @@ col5.metric(
     help="Revenue minus spend. Doesn't account for unsold/unmatched inventory — see matched-pairs profit below if available.",
 )
 col6.metric("Needs review", review_count)
+
+if pending_count:
+    st.info(
+        f"{pending_count} scraped transaction(s) pending review (source='email', not yet "
+        "promoted) — excluded from the metrics above. Run `python review_pending.py` to list them."
+    )
 
 st.subheader("Needs review")
 review_df = df[df["needs_review"]]
@@ -109,7 +123,7 @@ else:
     )
 
 st.subheader("Spend / revenue over time")
-ts_df = df.dropna(subset=["purchase_date"]).copy()
+ts_df = excel_df.dropna(subset=["purchase_date"]).copy()
 ts_df["purchase_date"] = pd.to_datetime(ts_df["purchase_date"], errors="coerce")
 ts_df = ts_df.dropna(subset=["purchase_date"])
 ts_df = ts_df[ts_df["transaction_type"].isin(["buy", "sell"])]
@@ -134,7 +148,7 @@ else:
     st.plotly_chart(fig_ts, use_container_width=True)
 
 st.subheader("Breakdown by platform")
-platform_df = df.dropna(subset=["platform"])
+platform_df = excel_df.dropna(subset=["platform"])
 if platform_df.empty:
     st.caption("No platform data to chart yet.")
 else:

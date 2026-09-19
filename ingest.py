@@ -136,7 +136,12 @@ def main() -> None:
                     continue
 
                 result.raw_email_uid = msg.uid
-                save_transaction(result.model_dump())
+                data = result.model_dump()
+                # Scraped transactions stay isolated from the canonical
+                # (source='excel') dataset until explicitly promoted —
+                # matching/export/dashboard metrics never see these.
+                data["source"] = "email"
+                save_transaction(data)
                 stats["saved"] += 1
                 if result.needs_review:
                     stats["needs_review"] += 1
