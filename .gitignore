@@ -3,3 +3,4 @@
 !transactions.db
 __pycache__/
 .venv/
+*.xlsm

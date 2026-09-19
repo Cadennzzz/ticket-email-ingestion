@@ -105,7 +105,7 @@ else:
                 "raw_email_uid",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
 st.subheader("Spend / revenue over time")
@@ -166,9 +166,11 @@ else:
 matches_df = load_matches()
 if not matches_df.empty:
     st.subheader("Matched buy/sell pairs")
-    st.dataframe(matches_df, use_container_width=True)
+    st.dataframe(matches_df, width="stretch")
 
-    profit_col = next((c for c in ("profit", "realized_profit") if c in matches_df.columns), None)
+    profit_col = next(
+        (c for c in ("net_profit", "profit", "realized_profit") if c in matches_df.columns), None
+    )
     if profit_col:
         st.metric("Total realized profit (matched pairs)", f"${matches_df[profit_col].sum():,.2f}")
 
@@ -189,4 +191,4 @@ filtered = display_df[
     & display_df["transaction_type"].isin(type_filter)
 ]
 
-st.dataframe(filtered, use_container_width=True)
+st.dataframe(filtered, width="stretch")
