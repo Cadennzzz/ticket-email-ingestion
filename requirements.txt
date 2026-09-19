@@ -1,0 +1,7 @@
+imap-tools
+python-dotenv
+google-genai
+tenacity
+streamlit
+plotly
+pandas
