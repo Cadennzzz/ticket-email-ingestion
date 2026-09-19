@@ -14,6 +14,7 @@ import plotly.express as px
 import streamlit as st
 
 from db import DB_PATH
+from grouping import group_pending_rows, read_existing_event_names, suggest_event_name
 
 st.set_page_config(page_title="Ticket Transactions", layout="wide")
 
@@ -51,6 +52,14 @@ def load_matches() -> pd.DataFrame:
     finally:
         conn.close()
     return df
+
+
+@st.cache_data(ttl=60)
+def load_existing_event_names() -> set:
+    try:
+        return read_existing_event_names()
+    except FileNotFoundError:
+        return set()
 
 
 st.title("Ticket Transactions Dashboard")
@@ -107,21 +116,67 @@ pending_df = df[(df["source"] == "email") & (~df["promoted"])]
 if pending_df.empty:
     st.success("Nothing pending — no scraped transactions awaiting promotion.")
 else:
-    st.dataframe(
-        pending_df[
-            [
-                "artist_or_event",
-                "platform",
-                "transaction_type",
-                "price_per_ticket",
-                "total_price",
-                "purchase_date",
-                "event_date",
-                "needs_review",
-            ]
-        ].rename(columns={"artist_or_event": "event", "transaction_type": "type"}),
-        width="stretch",
+    # pandas turns missing numeric values into NaN, but grouping.py's
+    # None-checks rely on real None (NaN is not None in Python, and
+    # NaN != NaN, which would silently break the section/row/seat and
+    # price-divergence comparisons) — convert before grouping.
+    pending_records = (
+        pending_df.astype(object).where(pd.notnull(pending_df), None).to_dict("records")
     )
+    pending_groups = group_pending_rows(pending_records)
+    existing_names = set(load_existing_event_names())
+
+    st.caption(
+        f"{len(pending_groups)} group(s) from {len(pending_records)} pending row(s) — "
+        "purely informational, nothing here is promoted or matched automatically."
+    )
+
+    for g in pending_groups:
+        suggested_name = suggest_event_name(
+            g["artist_or_event"], g["event_date"], g["tier"], existing_names
+        )
+        existing_names.add(suggested_name)  # don't suggest the same name twice in one render
+
+        n_rows = len(g["rows"])
+        label = (
+            f"{g['artist_or_event']} — {g['event_date']} — {g['tier']} "
+            f"({n_rows} row{'s' if n_rows != 1 else ''})"
+        )
+        if g["flag"]:
+            label += "  [FLAGGED]"
+
+        with st.expander(label):
+            if g["flag"]:
+                st.warning(g["flag"])
+
+            price_str = (
+                f"${g['avg_price_per_ticket']:,.2f}" if g["avg_price_per_ticket"] is not None else "N/A"
+            )
+            st.markdown(f"**Suggested Excel entry** — Event: `{suggested_name}`")
+            mcol1, mcol2, mcol3 = st.columns(3)
+            mcol1.metric("Quantity", f"{g['total_quantity']:,.0f}")
+            mcol2.metric("Total Cost", f"${g['total_cost']:,.2f}")
+            mcol3.metric("Price/Ticket", price_str)
+
+            st.dataframe(
+                pd.DataFrame(g["rows"])[
+                    [
+                        "artist_or_event",
+                        "platform",
+                        "transaction_type",
+                        "price_per_ticket",
+                        "total_price",
+                        "quantity",
+                        "section",
+                        "row",
+                        "seat",
+                        "purchase_date",
+                        "needs_review",
+                        "raw_email_uid",
+                    ]
+                ].rename(columns={"artist_or_event": "event", "transaction_type": "type"}),
+                width="stretch",
+            )
 
 st.subheader("Needs review")
 review_df = df[df["needs_review"]]
