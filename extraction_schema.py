@@ -46,9 +46,9 @@ class TicketTransaction(BaseModel):
     ]] = None
     confirmation_number: Optional[str] = None
 
-    # Review flag — set True whenever transaction_type or total_price is
-    # ambiguous/uncertain. False negatives (silently dropping a real
-    # transaction) are worse than a manual review queue.
+    # Review flag — set True whenever transaction_type, total_price, or
+    # quantity is ambiguous/uncertain. False negatives (silently dropping
+    # a real transaction) are worse than a manual review queue.
     needs_review: bool = False
     review_reason: Optional[str] = Field(
         default=None, description="One short phrase, e.g. 'total_price ambiguous — multiple amounts in email'"
@@ -79,6 +79,10 @@ occurred, not the event date.
 in every other field you can extract, but set needs_review to true and give a \
 one-phrase review_reason. Do not guess a value for total_price or transaction_type \
 just to avoid the review flag — an accurate "uncertain" beats a confident wrong guess.
+- Same rule for quantity: if the email doesn't clearly state how many tickets were \
+involved, leave quantity null, set needs_review to true, and give a review_reason \
+explaining that quantity wasn't stated. Do not default quantity to 1 (or any other \
+number) just to avoid the review flag.
 - Ignore promotional content, unrelated upsells, and boilerplate footers.
 
 Email metadata:
