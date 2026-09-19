@@ -35,14 +35,36 @@ jobs:
           after=$(sqlite3 transactions.db "SELECT COUNT(*) FROM transactions;" 2>/dev/null || echo 0)
           echo "NEW_COUNT=$((after - before))" >> "$GITHUB_ENV"
 
-      - name: Commit and push updated database
+      - name: Run matching
+        run: |
+          python match.py
+          match_count=$(sqlite3 transactions.db "SELECT COUNT(*) FROM matches;" 2>/dev/null || echo 0)
+          echo "MATCH_COUNT=$match_count" >> "$GITHUB_ENV"
+
+      - name: Run export
+        run: python export.py
+
+      - name: Commit and push updated files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # match.py fully rebuilds the `matches` table and export.py always
+          # rewrites EmailScrape.xlsx (openpyxl bumps internal modified-time
+          # metadata on every save), so both files show up as byte-changed
+          # on every run even when no new transactions came in. Gating on
+          # NEW_COUNT (real new rows from ingest.py) instead of a raw file
+          # diff avoids committing on every scheduled run with nothing new.
+          if [ "${NEW_COUNT:-0}" -le 0 ]; then
+            echo "No new transactions this run; skipping commit."
+            exit 0
+          fi
+
           git add -f transactions.db
+          git add EmailScrape.xlsx
           if git diff --cached --quiet; then
-            echo "No changes to transactions.db; nothing to commit."
+            echo "New transactions were found but tracked files are unchanged; skipping commit."
           else
-            git commit -m "chore: ingest run $(date -u +%Y-%m-%d) (${NEW_COUNT} new transactions)"
+            git commit -m "chore: pipeline run $(date -u +%Y-%m-%d) (${NEW_COUNT} new transactions, ${MATCH_COUNT:-0} matched pairs)"
             git push
           fi
