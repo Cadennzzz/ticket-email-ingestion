@@ -2,9 +2,11 @@
 Excel export for ticket bookkeeping.
 
 Reads transactions.db (transactions + matches tables, the latter produced
-by match.py) and writes/replaces the BL and SL sheets in EmailScrape.xlsx.
-Any other sheet in that workbook, and Working_tickets_copy.xlsm, are left
-untouched.
+by match.py) and writes/replaces the BL, SL, and Pending sheets in
+EmailScrape.xlsx. BL/SL cover the canonical (source='excel') dataset;
+Pending is a purely informational list of scraped-but-unpromoted
+(source='email') rows and never feeds Net Profit/ROI. Any other sheet in
+that workbook, and Working tickets copy.xlsm, are left untouched.
 
 Run with:
     python export.py
@@ -72,6 +74,23 @@ SL_CURRENCY_COLS = {
 }
 SL_PERCENT_COLS = {"ROI"}
 
+PENDING_COLUMNS = [
+    "Type",
+    "Event",
+    "Venue",
+    "Event Date",
+    "Purchase Date",
+    "Quantity",
+    "Price per Ticket",
+    "Total Price",
+    "Platform",
+    "Needs Review",
+    "Review Reason",
+]
+PENDING_DATE_COLS = {"Event Date", "Purchase Date"}
+PENDING_CURRENCY_COLS = {"Price per Ticket", "Total Price"}
+PENDING_PERCENT_COLS = set()
+
 
 def table_exists(conn: sqlite3.Connection, name: str) -> bool:
     cur = conn.execute(
@@ -119,9 +138,18 @@ def load_data():
             ]
         else:
             matches = []
+
+        # Purely informational: scraped emails not yet promoted into the
+        # canonical dataset. Never feeds matching/profit — see match.py.
+        pending = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT * FROM transactions WHERE source = 'email' AND promoted = 0"
+            ).fetchall()
+        ]
     finally:
         conn.close()
-    return buys, matches
+    return buys, matches, pending
 
 
 def write_header(ws, columns) -> None:
@@ -213,19 +241,41 @@ def build_sl_rows(matches):
     return rows
 
 
-def build_workbook(bl_rows, sl_rows):
+def build_pending_rows(pending):
+    rows = []
+    for p in pending:
+        rows.append(
+            {
+                "Type": p["transaction_type"],
+                "Event": p["artist_or_event"],
+                "Venue": p["venue"],
+                "Event Date": parse_date(p["event_date"]),
+                "Purchase Date": parse_date(p["purchase_date"]),
+                "Quantity": p["quantity"],
+                "Price per Ticket": p["price_per_ticket"],
+                "Total Price": p["total_price"],
+                "Platform": p["platform"],
+                "Needs Review": bool(p["needs_review"]),
+                "Review Reason": p["review_reason"],
+            }
+        )
+    return rows
+
+
+def build_workbook(bl_rows, sl_rows, pending_rows):
     if EXPORT_PATH.exists():
         wb = load_workbook(EXPORT_PATH)
     else:
         wb = Workbook()
         wb.remove(wb.active)
 
-    for name in ("BL", "SL"):
+    for name in ("BL", "SL", "Pending"):
         if name in wb.sheetnames:
             del wb[name]
 
     bl_ws = wb.create_sheet("BL")
     sl_ws = wb.create_sheet("SL")
+    pending_ws = wb.create_sheet("Pending")
 
     write_header(bl_ws, BL_COLUMNS)
     for row_num, row in enumerate(bl_rows, start=2):
@@ -235,19 +285,33 @@ def build_workbook(bl_rows, sl_rows):
     for row_num, row in enumerate(sl_rows, start=2):
         write_row(sl_ws, row_num, SL_COLUMNS, row, SL_DATE_COLS, SL_CURRENCY_COLS, SL_PERCENT_COLS)
 
+    write_header(pending_ws, PENDING_COLUMNS)
+    for row_num, row in enumerate(pending_rows, start=2):
+        write_row(
+            pending_ws,
+            row_num,
+            PENDING_COLUMNS,
+            row,
+            PENDING_DATE_COLS,
+            PENDING_CURRENCY_COLS,
+            PENDING_PERCENT_COLS,
+        )
+
     wb.save(EXPORT_PATH)
 
 
 def main() -> None:
-    buys, matches = load_data()
+    buys, matches, pending = load_data()
     bl_rows = build_bl_rows(buys, matches)
     sl_rows = build_sl_rows(matches)
+    pending_rows = build_pending_rows(pending)
 
-    build_workbook(bl_rows, sl_rows)
+    build_workbook(bl_rows, sl_rows, pending_rows)
 
     print("--- Export summary ---")
-    print(f"Rows written to BL: {len(bl_rows)}")
-    print(f"Rows written to SL: {len(sl_rows)}")
+    print(f"Rows written to BL:      {len(bl_rows)}")
+    print(f"Rows written to SL:      {len(sl_rows)}")
+    print(f"Rows written to Pending: {len(pending_rows)}")
     print(f"File: {EXPORT_PATH}")
 
 

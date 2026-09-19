@@ -102,6 +102,27 @@ if pending_count:
         "promoted) — excluded from the metrics above. Run `python review_pending.py` to list them."
     )
 
+st.subheader("Pending purchases (not yet in working sheet)")
+pending_df = df[(df["source"] == "email") & (~df["promoted"])]
+if pending_df.empty:
+    st.success("Nothing pending — no scraped transactions awaiting promotion.")
+else:
+    st.dataframe(
+        pending_df[
+            [
+                "artist_or_event",
+                "platform",
+                "transaction_type",
+                "price_per_ticket",
+                "total_price",
+                "purchase_date",
+                "event_date",
+                "needs_review",
+            ]
+        ].rename(columns={"artist_or_event": "event", "transaction_type": "type"}),
+        width="stretch",
+    )
+
 st.subheader("Needs review")
 review_df = df[df["needs_review"]]
 if review_df.empty:
