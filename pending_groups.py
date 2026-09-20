@@ -71,11 +71,12 @@ def main() -> None:
         print(f"    Venue: {g['venue']}")
         print("  Contributing rows:")
         for r in g["rows"]:
+            marker = "" if r.get("_counts_toward_total", True) else "  [duplicate order — excluded from totals]"
             print(
                 f"    id={r.get('id')} uid={r.get('raw_email_uid')} qty={r.get('quantity')} "
                 f"price/tix={r.get('price_per_ticket')} total={r.get('total_price')} "
                 f"section={r.get('section')} row={r.get('row')} seat={r.get('seat')} "
-                f"platform={r.get('platform')} purchase_date={r.get('purchase_date')}"
+                f"platform={r.get('platform')} purchase_date={r.get('purchase_date')}{marker}"
             )
         print()
 

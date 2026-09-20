@@ -186,9 +186,69 @@ def _split_by_seat_fields(rows):
     return groups
 
 
+def _order_key(r):
+    """Identify the order a row belongs to: order_id, falling back to
+    confirmation_number when order_id is null/blank. Returns None if
+    neither is present (nothing to dedupe against)."""
+    for field in ("order_id", "confirmation_number"):
+        v = r.get(field)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return None
+
+
+def _has_full_timestamp(value) -> bool:
+    """True if `value` looks like a full ISO timestamp rather than a bare
+    YYYY-MM-DD date."""
+    if not value:
+        return False
+    s = str(value)
+    return "T" in s or ":" in s
+
+
+def _pick_representative(rows):
+    """Among rows for the same order, prefer the one with the most
+    complete price/quantity data; break ties by full timestamp over a
+    bare date."""
+    def score(r):
+        completeness = sum(1 for f in ("price_per_ticket", "quantity") if r.get(f) is not None)
+        full_timestamp = 1 if _has_full_timestamp(r.get("purchase_date")) else 0
+        return (completeness, full_timestamp)
+
+    return max(rows, key=score)
+
+
+def _dedupe_same_order_rows(rows):
+    """
+    Separate emails (confirmation, receipt, ticket-ready notification)
+    often describe the same purchase. Rows sharing the same order (see
+    _order_key) are flagged so only one representative per order counts
+    toward quantity/cost totals in _summarize — every row is still kept
+    in place (and thus still listed/visible) so every contributing
+    raw_email_uid remains traceable.
+
+    Mutates and returns `rows`, tagging each with `_counts_toward_total`.
+    """
+    order_groups = defaultdict(list)
+    for r in rows:
+        key = _order_key(r)
+        r["_order_key"] = key
+        if key is not None:
+            order_groups[key].append(r)
+
+    representative_ids = {key: id(_pick_representative(group)) for key, group in order_groups.items()}
+
+    for r in rows:
+        key = r["_order_key"]
+        r["_counts_toward_total"] = key is None or id(r) == representative_ids[key]
+
+    return rows
+
+
 def _summarize(rows, flag=None):
-    total_quantity = sum(r.get("quantity") or 0 for r in rows)
-    total_cost = sum(r["total_price"] for r in rows if r.get("total_price") is not None)
+    counted_rows = [r for r in rows if r.get("_counts_toward_total", True)]
+    total_quantity = sum(r.get("quantity") or 0 for r in counted_rows)
+    total_cost = sum(r["total_price"] for r in counted_rows if r.get("total_price") is not None)
     avg_price = (total_cost / total_quantity) if total_quantity else None
 
     representative = rows[0]
@@ -218,10 +278,15 @@ def group_pending_rows(rows):
     seat, raw_email_uid.
 
     Grouping key is (normalized event name, event_date, normalized tier).
-    Within a bucket, rows are further split (never silently merged) when
-    price diverges meaningfully for the same tier, or when section/row/
-    seat conflict. Returned groups are sorted by event_date then event
-    name for stable, chronological output.
+    Within a bucket, rows sharing the same order (order_id, falling back
+    to confirmation_number) are first deduped down to one representative
+    for quantity/cost purposes — see _dedupe_same_order_rows — since
+    multiple emails (confirmation, receipt, ticket-ready notification)
+    can describe the same order and would otherwise multiply the total.
+    The bucket is then further split (never silently merged) when price
+    diverges meaningfully for the same tier, or when section/row/seat
+    conflict. Returned groups are sorted by event_date then event name
+    for stable, chronological output.
     """
     buckets = defaultdict(list)
     for r in rows:
@@ -232,6 +297,7 @@ def group_pending_rows(rows):
 
     groups = []
     for bucket_rows in buckets.values():
+        _dedupe_same_order_rows(bucket_rows)
         price_clusters = _split_by_price(bucket_rows)
         flag = PRICE_DIVERGENCE_FLAG if len(price_clusters) > 1 else None
 
