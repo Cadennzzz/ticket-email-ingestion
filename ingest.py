@@ -5,21 +5,29 @@ Scans the inbox via IMAP, filters to allowlisted ticket-platform senders,
 skips anything already in the DB, sends the rest to Gemini for structured
 extraction, and stores confirmed ticket transactions in transactions.db.
 
+If extraction finds no price in the email body, falls back to fetching a
+linked ticket/order page (PDF or HTML) from the body and re-extracting
+once with that content appended — see try_link_fallback.
+
 Usage:
     python ingest.py [--limit N]
 """
 
 import argparse
 import html
+import io
 import os
 import re
 import sys
+from typing import Optional
 
+import requests
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from imap_tools import AND, MailBox
+from pypdf import PdfReader
 from tenacity import (
     retry,
     retry_if_exception,
@@ -40,6 +48,13 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-3.5-flash-lite"
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+')
+
+# Fallback link-fetch, used when an email mentions a price only on a linked
+# order/ticket page (e.g. a "view your tickets" PDF) rather than in the body.
+MAX_LINK_CANDIDATES = 3
+LINK_FETCH_TIMEOUT = 8
+LINK_FETCH_USER_AGENT = "Mozilla/5.0 (compatible; ticket-ingestion-bot/1.0)"
 
 
 def html_to_text(raw_html: str) -> str:
@@ -77,6 +92,89 @@ def extract_transaction(client: genai.Client, sender: str, subject: str, receive
     return TicketTransaction.model_validate_json(response.text)
 
 
+def extract_candidate_urls(body: str, limit: int = MAX_LINK_CANDIDATES) -> list:
+    """Return up to `limit` distinct URLs found in the email body, in the
+    order they appear."""
+    seen = set()
+    urls = []
+    for url in _URL_RE.findall(body or ""):
+        url = url.rstrip(').,;\'"')  # trailing punctuation often glued to a link in prose
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+        if len(urls) >= limit:
+            break
+    return urls
+
+
+def fetch_linked_text(url: str) -> Optional[str]:
+    """
+    Fetch `url` and return extracted text if it looks like a ticket/order
+    page (PDF or HTML). Returns None on any failure — bad status, timeout,
+    connection error, unrecognized content type, unparseable PDF — never
+    raises.
+    """
+    try:
+        response = requests.get(
+            url,
+            timeout=LINK_FETCH_TIMEOUT,
+            headers={"User-Agent": LINK_FETCH_USER_AGENT},
+        )
+    except requests.RequestException:
+        return None
+
+    if not response.ok:
+        return None
+
+    content_type = response.headers.get("Content-Type", "").lower()
+
+    if "application/pdf" in content_type or url.lower().split("?", 1)[0].endswith(".pdf"):
+        try:
+            reader = PdfReader(io.BytesIO(response.content))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception:
+            return None
+        return text.strip() or None
+
+    if "text/html" in content_type:
+        return html_to_text(response.text) or None
+
+    return None
+
+
+def try_link_fallback(client: genai.Client, sender: str, subject: str, received_date: str, body: str) -> Optional[TicketTransaction]:
+    """
+    Called when the initial extraction found no price. Looks for links in
+    the email body and tries fetching each candidate (up to
+    MAX_LINK_CANDIDATES) in order until one yields usable text, then
+    re-runs extraction exactly once with that text appended to the
+    original body. Never issues more than one Gemini call, even if that
+    call still comes back without a price — this is a single fallback
+    attempt, not an exhaustive retry across every link.
+
+    Returns the re-extracted TicketTransaction if it found a price,
+    otherwise None (caller should keep the original result).
+    """
+    for url in extract_candidate_urls(body):
+        linked_text = fetch_linked_text(url)
+        if not linked_text:
+            continue
+
+        augmented_body = f"{body}\n\nLinked ticket page content:\n{linked_text}"
+        fallback_result = extract_transaction(
+            client=client,
+            sender=sender,
+            subject=subject,
+            received_date=received_date,
+            body=augmented_body,
+        )
+        if fallback_result.total_price is not None or fallback_result.price_per_ticket is not None:
+            return fallback_result
+        return None  # fetched content but still no price — don't try more links
+
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scan inbox and extract ticket transactions.")
     parser.add_argument("--limit", type=int, default=100, help="Max number of messages to fetch (default: 100)")
@@ -105,6 +203,8 @@ def main() -> None:
         "saved": 0,
         "needs_review": 0,
         "errors": 0,
+        "link_fallback_attempted": 0,
+        "link_fallback_recovered_price": 0,
     }
 
     with MailBox("imap.gmail.com").login(GMAIL_USER, GMAIL_APP_PASSWORD) as mailbox:
@@ -135,6 +235,25 @@ def main() -> None:
                 if not result.is_ticket_transaction:
                     continue
 
+                if result.total_price is None and result.price_per_ticket is None:
+                    stats["link_fallback_attempted"] += 1
+                    try:
+                        fallback_result = try_link_fallback(
+                            client=client,
+                            sender=msg.from_,
+                            subject=msg.subject,
+                            received_date=str(msg.date),
+                            body=body,
+                        )
+                    except Exception as e:
+                        fallback_result = None
+                        print(f"  Link-fetch fallback errored for uid={msg.uid}: {e}")
+
+                    if fallback_result is not None:
+                        print(f"  Link-fetch fallback recovered price for uid={msg.uid}")
+                        stats["link_fallback_recovered_price"] += 1
+                        result = fallback_result
+
                 result.raw_email_uid = msg.uid
                 data = result.model_dump()
                 # Scraped transactions stay isolated from the canonical
@@ -159,6 +278,8 @@ def main() -> None:
     print(f"Saved as transactions:     {stats['saved']}")
     print(f"Flagged needs_review:      {stats['needs_review']}")
     print(f"Errors:                    {stats['errors']}")
+    print(f"Link-fetch fallback tried: {stats['link_fallback_attempted']}")
+    print(f"Link-fetch recovered price: {stats['link_fallback_recovered_price']}")
 
 
 if __name__ == "__main__":
