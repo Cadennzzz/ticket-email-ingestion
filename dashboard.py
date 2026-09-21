@@ -111,11 +111,15 @@ if pending_count:
         "promoted) — excluded from the metrics above. Run `python review_pending.py` to list them."
     )
 
-st.subheader("Pending purchases (not yet in working sheet)")
-pending_df = df[(df["source"] == "email") & (~df["promoted"])]
-if pending_df.empty:
-    st.success("Nothing pending — no scraped transactions awaiting promotion.")
-else:
+def render_pending_section(pending_df: pd.DataFrame, existing_names: set) -> None:
+    """Render one grouped, expander-per-group 'Pending ...' section.
+    Mutates `existing_names` in place so a purchases section and a sales
+    section rendered back to back don't suggest the same Excel event name
+    twice."""
+    if pending_df.empty:
+        st.success("Nothing pending — no scraped transactions awaiting promotion.")
+        return
+
     # pandas turns missing numeric values into NaN, but grouping.py's
     # None-checks rely on real None (NaN is not None in Python, and
     # NaN != NaN, which would silently break the section/row/seat and
@@ -124,7 +128,6 @@ else:
         pending_df.astype(object).where(pd.notnull(pending_df), None).to_dict("records")
     )
     pending_groups = group_pending_rows(pending_records)
-    existing_names = set(load_existing_event_names())
 
     st.caption(
         f"{len(pending_groups)} group(s) from {len(pending_records)} pending row(s) — "
@@ -177,6 +180,17 @@ else:
                 ].rename(columns={"artist_or_event": "event", "transaction_type": "type"}),
                 width="stretch",
             )
+
+
+pending_existing_names = set(load_existing_event_names())
+
+st.subheader("Pending purchases (not yet in working sheet)")
+pending_buy_df = df[(df["source"] == "email") & (~df["promoted"]) & (df["transaction_type"] == "buy")]
+render_pending_section(pending_buy_df, pending_existing_names)
+
+st.subheader("Pending sales (not yet in working sheet)")
+pending_sell_df = df[(df["source"] == "email") & (~df["promoted"]) & (df["transaction_type"] == "sell")]
+render_pending_section(pending_sell_df, pending_existing_names)
 
 st.subheader("Needs review")
 review_df = df[df["needs_review"]]

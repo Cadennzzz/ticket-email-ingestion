@@ -34,20 +34,7 @@ def load_pending_rows():
     return rows
 
 
-def main() -> None:
-    rows = load_pending_rows()
-    if not rows:
-        print("No pending scraped transactions.")
-        return
-
-    groups = group_pending_rows(rows)
-
-    try:
-        existing_names = read_existing_event_names()
-    except FileNotFoundError:
-        print("(Working tickets copy.xlsm not found — suggested names won't check for collisions.)\n")
-        existing_names = set()
-
+def print_groups(groups, rows, existing_names) -> None:
     print(f"--- {len(groups)} group(s) from {len(rows)} pending row(s) ---\n")
 
     for i, g in enumerate(groups, start=1):
@@ -79,6 +66,34 @@ def main() -> None:
                 f"platform={r.get('platform')} purchase_date={r.get('purchase_date')}{marker}"
             )
         print()
+
+
+def main() -> None:
+    rows = load_pending_rows()
+    if not rows:
+        print("No pending scraped transactions.")
+        return
+
+    buy_rows = [r for r in rows if r.get("transaction_type") == "buy"]
+    sell_rows = [r for r in rows if r.get("transaction_type") == "sell"]
+
+    try:
+        existing_names = read_existing_event_names()
+    except FileNotFoundError:
+        print("(Working tickets copy.xlsm not found — suggested names won't check for collisions.)\n")
+        existing_names = set()
+
+    print("=== Pending purchases ===\n")
+    if buy_rows:
+        print_groups(group_pending_rows(buy_rows), buy_rows, existing_names)
+    else:
+        print("No pending purchases.\n")
+
+    print("=== Pending sales ===\n")
+    if sell_rows:
+        print_groups(group_pending_rows(sell_rows), sell_rows, existing_names)
+    else:
+        print("No pending sales.\n")
 
 
 if __name__ == "__main__":
