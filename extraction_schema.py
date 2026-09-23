@@ -12,6 +12,19 @@ relying on prompt instructions alone.
 from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
+# Must cover every label in allowlist.PLATFORM_BY_DOMAIN (ingest.py
+# assigns those after extraction), plus "Other" for anything unmapped.
+PLATFORMS = (
+    "Ticketmaster", "StubHub", "SeatGeek", "AXS", "Vivid Seats", "Gametime",
+    "Lysted", "CrowdVolt", "Dice", "Radiate", "Fourvenues", "Paciolan",
+    "Belly Up", "Front Gate Tickets", "Insomniac", "Red Rocks", "TicketWeb",
+    "Atom Tickets", "TickPick", "See Tickets", "ShowClix", "Prekindle",
+    "Tao Group", "Cash or Trade", "Victory Live", "Tixr", "Stagefront",
+    "Shotgun", "Club Tickets", "Megatix", "Universe", "Eventbrite",
+    "AEG Presents", "Goldenvoice", "Bowery Presents", "Laylo", "Bandsintown",
+    "Other",
+)
+
 
 class TicketTransaction(BaseModel):
     # Gate field — check this first. If False, discard the record entirely
@@ -21,9 +34,7 @@ class TicketTransaction(BaseModel):
     )
 
     transaction_type: Optional[Literal["buy", "sell"]] = None
-    platform: Optional[Literal[
-        "Ticketmaster", "StubHub", "SeatGeek", "AXS", "Vivid Seats", "Gametime", "Other"
-    ]] = None
+    platform: Optional[Literal[PLATFORMS]] = None
     order_id: Optional[str] = None
     artist_or_event: Optional[str] = None
     venue: Optional[str] = None
@@ -40,6 +51,10 @@ class TicketTransaction(BaseModel):
     price_per_ticket: Optional[float] = None
     total_price: Optional[float] = None
     fees: Optional[float] = Field(default=None, description="Only if broken out separately from total_price")
+    payout_amount: Optional[float] = Field(
+        default=None,
+        description="Sales only: net amount paid out to the seller after platform fees, only if explicitly stated",
+    )
     currency: Optional[str] = Field(default=None, description="ISO 4217, e.g. USD")
     transfer_status: Optional[Literal[
         "transferred", "pending", "listed", "sold", "refunded", "cancelled"
@@ -61,8 +76,8 @@ class TicketTransaction(BaseModel):
 
 
 EXTRACTION_PROMPT = """You extract structured data from ticket-marketplace emails \
-(Ticketmaster, StubHub, SeatGeek, AXS, Vivid Seats, Gametime, and similar platforms) \
-for a ticket resale business's bookkeeping system.
+(Ticketmaster, StubHub, SeatGeek, AXS, Vivid Seats, Gametime, Lysted, CrowdVolt, \
+Dice, Fourvenues, and similar platforms) for a ticket resale business's bookkeeping system.
 
 Rules:
 - If this email is NOT a ticket purchase, sale, transfer, listing, or refund \
@@ -72,7 +87,15 @@ Do not force a classification on marketing emails, event reminders, or unrelated
 user listed, transferred out, or received payout for tickets they sold.
 - total_price is the final amount charged/received, including fees, if stated. \
 price_per_ticket is total_price / quantity unless the email states it directly.
+- For a sale, total_price is the gross sale amount (what the tickets sold for, e.g. \
+"Sale Total", or per-ticket price x quantity), never the seller's payout. \
+payout_amount is the net amount paid out to the seller after platform fees \
+(e.g. "Payout", "Expected payout"). Populate payout_amount only when the email \
+explicitly states it — never estimate or calculate it from a fee percentage or \
+from other amounts. Leave payout_amount null for purchases.
 - Only populate fees if the email itemizes them separately from the total.
+- If the email only confirms that tickets were listed for sale (not yet sold), \
+set transfer_status to "listed".
 - Dates: event_date as YYYY-MM-DD. purchase_date is when this transaction/email \
 occurred, not the event date.
 - If you cannot confidently determine transaction_type or total_price, still fill \

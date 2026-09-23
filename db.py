@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     price_per_ticket REAL,
     total_price REAL,
     fees REAL,
+    payout_amount REAL,
     currency TEXT,
     transfer_status TEXT,
     confirmation_number TEXT,
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 _MIGRATIONS = [
     ("source", "TEXT NOT NULL DEFAULT 'email'"),
     ("promoted", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("payout_amount", "REAL"),
 ]
 
 COLUMNS = [
@@ -68,6 +70,7 @@ COLUMNS = [
     "price_per_ticket",
     "total_price",
     "fees",
+    "payout_amount",
     "currency",
     "transfer_status",
     "confirmation_number",

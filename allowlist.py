@@ -11,6 +11,8 @@ root domain unless the platform sends from something unrelated to it
 (e.g. a third-party ESP domain), in which case add that domain directly too.
 """
 
+from typing import Optional
+
 ALLOWLISTED_DOMAINS = {
     "ticketmaster.com",
     "email.ticketmaster.com",
@@ -75,14 +77,83 @@ ALLOWLISTED_DOMAINS = {
 }
 
 
+# Sender domain -> platform label, matched the same way as the allowlist
+# (exact or subdomain; the most specific key wins). Labels follow the
+# spelling already used in the Excel workbook where one exists, and must
+# stay in sync with the platform Literal in extraction_schema.py.
+#
+# The sender domain is authoritative for platform — ingest.py overrides
+# whatever the LLM picked with this, since the model tends to fall back to
+# "Other" for anything outside the big marketplaces.
+PLATFORM_BY_DOMAIN = {
+    "ticketmaster.com": "Ticketmaster",
+    "livenation.com": "Ticketmaster",
+    "stubhub.com": "StubHub",
+    "seatgeek.com": "SeatGeek",
+    "axs.com": "AXS",
+    "vividseats.com": "Vivid Seats",
+    "gametime.co": "Gametime",
+    "lysted.com": "Lysted",
+    "automatiq.com": "Lysted",
+    "hyperwallet.com": "Lysted",  # Lysted's payout processor
+    "crowdvolt.com": "CrowdVolt",
+    "dice.fm": "Dice",
+    "fourvenues.com": "Fourvenues",
+    "paclive.com": "Paciolan",
+    "go.cubuffs.com": "Paciolan",
+    "bellyupaspen.com": "Belly Up",
+    "frontgatetickets.com": "Front Gate Tickets",
+    "insomniac.com": "Insomniac",
+    "redrocksonline.com": "Red Rocks",
+    "ticketweb.com": "TicketWeb",
+    "atomtickets.com": "Atom Tickets",
+    "tickpick.com": "TickPick",
+    "seetickets.us": "See Tickets",
+    "showclix.com": "ShowClix",
+    "prekindle.com": "Prekindle",
+    "taogroup.com": "Tao Group",
+    "cashortrade.org": "Cash or Trade",
+    "victorylive.com": "Victory Live",
+    "tixr.com": "Tixr",
+    "stagefronttickets.com": "Stagefront",
+    "tickets-shotgun.live": "Shotgun",
+    "clubtickets.com": "Club Tickets",
+    "megatix.com.au": "Megatix",
+    "universe.com": "Universe",
+    "eventbrite.com": "Eventbrite",
+    "aegpresents.com": "AEG Presents",
+    "goldenvoice.com": "Goldenvoice",
+    "bowerypresents.com": "Bowery Presents",
+    "laylo.com": "Laylo",
+    "bandsintown.com": "Bandsintown",
+}
+
+
+def _sender_domain(from_address: str) -> Optional[str]:
+    if not from_address or "@" not in from_address:
+        return None
+    return from_address.rsplit("@", 1)[-1].strip().lower().rstrip(".")
+
+
 def is_allowlisted(from_address: str) -> bool:
     """Check whether the sender's domain matches or is a subdomain of an allowlisted domain."""
-    if not from_address or "@" not in from_address:
+    domain = _sender_domain(from_address)
+    if domain is None:
         return False
-
-    domain = from_address.rsplit("@", 1)[-1].strip().lower().rstrip(".")
 
     for allowed in ALLOWLISTED_DOMAINS:
         if domain == allowed or domain.endswith("." + allowed):
             return True
     return False
+
+
+def platform_for_sender(from_address: str) -> Optional[str]:
+    """Platform label for the sender's domain, or None if it isn't mapped."""
+    domain = _sender_domain(from_address)
+    if domain is None:
+        return None
+
+    matches = [key for key in PLATFORM_BY_DOMAIN if domain == key or domain.endswith("." + key)]
+    if not matches:
+        return None
+    return PLATFORM_BY_DOMAIN[max(matches, key=len)]
