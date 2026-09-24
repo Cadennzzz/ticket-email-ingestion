@@ -17,6 +17,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from crosscheck import find_excel_matches
 from db import DB_PATH
 from grouping import group_pending_rows, read_existing_event_names, suggest_event_name
 
@@ -311,7 +312,19 @@ df["promoted"] = df["promoted"].fillna(0).astype(bool)
 # canonical Excel-sourced dataset. Scraped emails (source='email') are
 # captured for review but excluded here until explicitly promoted.
 excel_df = df[df["source"] == "excel"].copy()
-pending_count = int(((df["source"] == "email") & (~df["promoted"])).sum())
+
+
+def _records(frame: pd.DataFrame) -> list:
+    return frame.astype(object).where(pd.notnull(frame), None).to_dict("records")
+
+
+# Scraped rows that already have a matching line in the sheet were handled
+# by hand; they're listed separately instead of as needing action.
+unpromoted_df = df[(df["source"] == "email") & (~df["promoted"])]
+excel_match = find_excel_matches(_records(unpromoted_df), _records(excel_df))
+recorded_df = unpromoted_df[unpromoted_df["id"].isin(excel_match)]
+pending_df = unpromoted_df[~unpromoted_df["id"].isin(excel_match)]
+pending_count = len(pending_df)
 
 buys = excel_df[excel_df["transaction_type"] == "buy"]
 sells = excel_df[excel_df["transaction_type"] == "sell"]
@@ -333,7 +346,7 @@ st.markdown(
 if pending_count:
     st.markdown(
         f'<div class="banner"><span>⚠</span><div><b>{pending_count}</b> scraped transaction(s) pending review '
-        "(source='email', not yet promoted) — excluded from the metrics below. "
+        "(source='email', not yet promoted or recorded in the sheet) — excluded from the metrics below. "
         "Run <code>python review_pending.py</code> to list them.</div></div>",
         unsafe_allow_html=True,
     )
@@ -606,8 +619,53 @@ def render_pending_section(pending_df: pd.DataFrame, existing_names: set, key_pr
 
 pending_existing_names = set(load_existing_event_names())
 
-pending_buy_df = df[(df["source"] == "email") & (~df["promoted"]) & (df["transaction_type"] == "buy")]
-pending_sell_df = df[(df["source"] == "email") & (~df["promoted"]) & (df["transaction_type"] == "sell")]
+pending_buy_df = pending_df[pending_df["transaction_type"] == "buy"]
+pending_sell_df = pending_df[pending_df["transaction_type"] == "sell"]
+
+
+def render_recorded_section(recorded_df: pd.DataFrame) -> None:
+    """Collapsed list of scraped rows that already have a line in the sheet,
+    each beside the Excel row that records it (crosscheck.find_excel_matches)."""
+    if recorded_df.empty:
+        return
+    excel_by_id = excel_df.set_index("id")
+    table = recorded_df.assign(excel_id=recorded_df["id"].map(excel_match))
+    table = table.assign(
+        excel_event=table["excel_id"].map(excel_by_id["artist_or_event"]),
+        excel_quantity=table["excel_id"].map(excel_by_id["quantity"]),
+        excel_total=table["excel_id"].map(excel_by_id["total_price"]),
+    ).sort_values(["excel_id", "id"])
+    st.markdown('<div class="group-lbl">Both tabs · handled by hand</div>', unsafe_allow_html=True)
+    with st.expander(f"Already recorded in Excel ({len(recorded_df)})"):
+        st.caption(
+            "Same type and event date, a shared event word, and quantity/total within $1 of an "
+            "Excel row — alone or summed with other emails for the same line."
+        )
+        st.dataframe(
+            table[
+                [
+                    "artist_or_event",
+                    "transaction_type",
+                    "platform",
+                    "quantity",
+                    "total_price",
+                    "raw_email_uid",
+                    "excel_id",
+                    "excel_quantity",
+                    "excel_total",
+                    "excel_event",
+                ]
+            ].rename(columns={"artist_or_event": "event", "transaction_type": "type", "raw_email_uid": "uid"}),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "total_price": MONEY_COL,
+                "excel_id": st.column_config.NumberColumn("excel row", format="%d"),
+                "excel_quantity": st.column_config.NumberColumn("excel qty", format="%d"),
+                "excel_total": st.column_config.NumberColumn("excel total", format="$%.2f"),
+                "excel_event": st.column_config.TextColumn("excel event"),
+            },
+        )
 
 # --- Pending -------------------------------------------------------------------
 with st.container(border=True, key="zone-pending"):
@@ -624,6 +682,7 @@ with st.container(border=True, key="zone-pending"):
         render_pending_section(pending_buy_df, pending_existing_names, "buy")
     with tab_sell:
         render_pending_section(pending_sell_df, pending_existing_names, "sell")
+    render_recorded_section(recorded_df)
 
 # --- Needs review --------------------------------------------------------------
 review_df = df[df["needs_review"]]
