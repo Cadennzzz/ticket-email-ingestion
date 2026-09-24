@@ -250,6 +250,10 @@ def _summarize(rows, flag=None):
     total_quantity = sum(r.get("quantity") or 0 for r in counted_rows)
     total_cost = sum(r["total_price"] for r in counted_rows if r.get("total_price") is not None)
     avg_price = (total_cost / total_quantity) if total_quantity else None
+    # Sell rows only. None unless every counted row states a payout — a
+    # partial sum would understate what the seller actually receives.
+    payouts = [r.get("payout_amount") for r in counted_rows]
+    total_payout = sum(payouts) if payouts and None not in payouts else None
 
     representative = rows[0]
     return {
@@ -260,6 +264,7 @@ def _summarize(rows, flag=None):
         "total_quantity": total_quantity,
         "total_cost": total_cost,
         "avg_price_per_ticket": avg_price,
+        "total_payout": total_payout,
         "contributing_ids": [r.get("id") for r in rows],
         "contributing_uids": [r.get("raw_email_uid") for r in rows],
         "rows": rows,

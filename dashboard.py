@@ -590,8 +590,15 @@ def render_pending_section(pending_df: pd.DataFrame, existing_names: set, key_pr
             )
             mcol1, mcol2, mcol3 = st.columns(3, gap="small")
             mcol1.metric("Quantity", f"{g['total_quantity']:,.0f}")
-            mcol2.metric("Total Cost", f"${g['total_cost']:,.2f}")
-            mcol3.metric("Price/Ticket", price_str)
+            if key_prefix == "sell":
+                # Mirrors how Lysted/CrowdVolt describe a sale: gross Sale
+                # Total, then the net Payout the seller actually receives.
+                payout_str = f"${g['total_payout']:,.2f}" if g["total_payout"] is not None else "—"
+                mcol2.metric("Sale Total", f"${g['total_cost']:,.2f}")
+                mcol3.metric("Payout", payout_str)
+            else:
+                mcol2.metric("Total Cost", f"${g['total_cost']:,.2f}")
+                mcol3.metric("Price/Ticket", price_str)
 
             st.dataframe(
                 pd.DataFrame(g["rows"])[
