@@ -94,6 +94,9 @@ payout_amount is the net amount paid out to the seller after platform fees \
 explicitly states it — never estimate or calculate it from a fee percentage or \
 from other amounts. Leave payout_amount null for purchases.
 - Only populate fees if the email itemizes them separately from the total.
+- order_id is the order or invoice number assigned by the platform that sent \
+this email (e.g. a Lysted "Invoice #"), not another marketplace's order code \
+mentioned in the body.
 - If the email only confirms that tickets were listed for sale (not yet sold), \
 set transfer_status to "listed".
 - If the email only confirms that a listing was removed, deleted, or taken down \

@@ -49,6 +49,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-3.5-flash-lite"
 
 _TAG_RE = re.compile(r"<[^>]+>")
+# <style>/<script>/<head> contents and HTML comments (Outlook conditional
+# CSS) aren't visible text; left in, StubHub emails reach the LLM as ~29k
+# chars of mostly CSS.
+_INVISIBLE_RE = re.compile(r"<(style|script|head)\b.*?</\1\s*>|<!--.*?-->", re.IGNORECASE | re.DOTALL)
 _URL_RE = re.compile(r'https?://[^\s<>"\')\]]+')
 
 # Fallback link-fetch, used when an email mentions a price only on a linked
@@ -67,8 +71,9 @@ MIN_PLAIN_TEXT_CHARS = 200
 
 
 def html_to_text(raw_html: str) -> str:
-    """Crude fallback: strip tags and unescape entities."""
-    text = _TAG_RE.sub(" ", raw_html)
+    """Crude fallback: drop non-visible blocks, strip tags, unescape entities."""
+    text = _INVISIBLE_RE.sub(" ", raw_html)
+    text = _TAG_RE.sub(" ", text)
     text = html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
 
