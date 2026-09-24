@@ -37,7 +37,14 @@ from tenacity import (
 )
 
 from allowlist import is_allowlisted, platform_for_sender
-from db import find_order, is_processed, save_transaction
+from db import (
+    delete_email_row,
+    find_order,
+    find_same_event,
+    is_processed,
+    save_transaction,
+    unmatched_transfer_rows,
+)
 from extraction_schema import EXTRACTION_PROMPT, TicketTransaction
 
 load_dotenv()
@@ -237,11 +244,29 @@ def email_header_fields(msg) -> dict:
     }
 
 
+def _skip(stats: dict, key: str, uid, why: str) -> None:
+    print(f"  Skipping uid={uid}: {why}")
+    stats[key] += 1
+
+
+def _flag(result: TicketTransaction, reason: str) -> None:
+    result.needs_review = True
+    result.review_reason = result.review_reason or reason
+
+
 def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     """
     Extract one allowlisted, not-yet-processed message. Returns the row to
-    save, or None if it isn't a saveable transaction (not a ticket email,
-    or a listing-only confirmation). Updates `stats` in place.
+    save, or None if the email isn't the authoritative record of a
+    transaction. Updates `stats` in place.
+
+    A purchase is recorded from its receipt; a sale from the email saying
+    it sold. Listings, delistings, and follow-ups (delivered/ready notices,
+    transfers that deliver an already-saved purchase or sale) are skipped.
+    Anything the model can't place is saved with needs_review set.
+
+    If the returned row carries "replaces_id", save it with save_result(),
+    which removes the lesser row it supersedes.
     """
     body = email_body_text(msg.text, msg.html)
 
@@ -257,28 +282,43 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     if not result.is_ticket_transaction:
         return None
 
+    kind = result.email_kind
+
     # Listing confirmations ("You listed ... tickets") aren't
     # sales — the matching "sold" email is what counts.
-    if result.transfer_status == "listed":
-        stats["skipped_listing"] += 1
+    if kind == "sale_listing" or result.transfer_status == "listed":
+        _skip(stats, "skipped_listing", msg.uid, "listing, not a sale")
         return None
 
     # "You deleted your listing" emails aren't sales either.
-    if result.transfer_status == "delisted":
-        stats["skipped_delisting"] += 1
+    if kind == "sale_delisting" or result.transfer_status == "delisted":
+        _skip(stats, "skipped_delisting", msg.uid, "listing removed, not a sale")
         return None
 
-    # Confirmation + "tickets delivered" emails for one order extract to the
-    # same transaction; keep only the first one seen.
     platform = platform_for_sender(msg.from_) or result.platform
-    if platform and result.order_id and result.transaction_type:
-        existing_id = find_order(platform, result.order_id, result.transaction_type)
-        if existing_id is not None:
-            print(f"  Skipping uid={msg.uid}: {platform} order {result.order_id} already saved as id={existing_id}")
-            stats["skipped_duplicate_order"] += 1
-            return None
+    replaces_id = None
 
-    if result.total_price is None and result.price_per_ticket is None:
+    # Confirmation + "tickets delivered" emails for one order extract to the
+    # same transaction. Keep one row per order; a receipt supersedes a row
+    # saved from a follow-up (e.g. "tickets ready" that shows the subtotal
+    # without fees).
+    if platform and result.order_id and result.transaction_type:
+        existing = find_order(platform, result.order_id, result.transaction_type)
+        if existing is not None:
+            upgradable = (
+                kind == "purchase_receipt"
+                and existing["email_kind"] == "purchase_update"
+                and existing["source"] == "email"
+                and not existing["promoted"]
+            )
+            if not upgradable:
+                _skip(stats, "skipped_duplicate_order", msg.uid,
+                      f"{platform} order {result.order_id} already saved as id={existing['id']}")
+                return None
+            replaces_id = existing["id"]
+
+    has_price = result.total_price is not None or result.price_per_ticket is not None
+    if not has_price and kind != "transfer_out":
         stats["link_fallback_attempted"] += 1
         try:
             fallback_result = try_link_fallback(
@@ -296,7 +336,33 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
         if fallback_result is not None:
             print(f"  Link-fetch fallback recovered price for uid={msg.uid}")
             stats["link_fallback_recovered_price"] += 1
+            fallback_result.email_kind = kind
             result = fallback_result
+            has_price = True
+
+    # A transfer email has no order number and no price of its own. One that
+    # matches a saved purchase/sale (same event, date, quantity) is just
+    # delivering it; one that doesn't may be the only trace of an
+    # off-platform deal. Checked after the link fallback, so a per-ticket
+    # email whose price is in the ticket PDF (Fourvenues) is never a transfer.
+    if kind in ("transfer_out", "purchase_update") and not result.order_id and not has_price:
+        match_id = None
+        if result.transaction_type and result.event_date and result.quantity:
+            match_id = find_same_event(
+                result.transaction_type, result.event_date, result.quantity, result.artist_or_event
+            )
+        if match_id is not None:
+            _skip(stats, "skipped_transfer", msg.uid, f"transfer for already-saved id={match_id}")
+            return None
+        if kind == "transfer_out":
+            _flag(result, "transfer out with no sale price — possibly an off-platform sale")
+
+    if kind == "sale_completed" and not has_price and result.payout_amount is None:
+        _flag(result, "sale email states neither a sale price nor a payout")
+    elif kind == "purchase_update" and not has_price:
+        _flag(result, "purchase follow-up with no receipt or price found")
+    elif kind is None or kind == "unclear":
+        _flag(result, "email type unclear — not clearly a receipt, sale, listing, or transfer")
 
     result.raw_email_uid = msg.uid
     result.platform = platform
@@ -306,7 +372,33 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     # matching/export/dashboard metrics never see these.
     data["source"] = "email"
     data.update(email_header_fields(msg))
+    data["replaces_id"] = replaces_id
     return data
+
+
+def save_result(data: dict) -> None:
+    """Save a row from process_message, first removing the row it supersedes."""
+    if data.get("replaces_id") is not None:
+        delete_email_row(data["replaces_id"])
+        print(f"  uid={data['raw_email_uid']} replaces id={data['replaces_id']}")
+    save_transaction(data)
+
+
+def drop_matched_transfers(stats: dict) -> None:
+    """
+    Remove saved transfer rows that now match a purchase/sale. A transfer
+    can arrive minutes before the "sold" email it delivers (or in an earlier
+    run), so at the time it was processed there was nothing to match.
+    """
+    for row in unmatched_transfer_rows():
+        if not (row["transaction_type"] and row["event_date"] and row["quantity"]):
+            continue
+        match_id = find_same_event(
+            row["transaction_type"], row["event_date"], row["quantity"], row["artist_or_event"]
+        )
+        if match_id is not None and delete_email_row(row["id"]):
+            print(f"  Dropped transfer row id={row['id']} (uid={row['raw_email_uid']}): delivers id={match_id}")
+            stats["dropped_matched_transfer"] += 1
 
 
 def main() -> None:
@@ -342,10 +434,18 @@ def main() -> None:
         "skipped_listing": 0,
         "skipped_delisting": 0,
         "skipped_duplicate_order": 0,
+        "skipped_transfer": 0,
+        "dropped_matched_transfer": 0,
     }
 
     with MailBox("imap.gmail.com").login(GMAIL_USER, GMAIL_APP_PASSWORD) as mailbox:
-        messages = mailbox.fetch(AND(all=True), limit=args.limit, reverse=True)
+        # Fetch the newest N, then process oldest first: a receipt normally
+        # arrives before its "delivered" notices and a sale before its
+        # transfer, so the authoritative email is usually seen first.
+        messages = sorted(
+            mailbox.fetch(AND(all=True), limit=args.limit, reverse=True),
+            key=lambda m: int(m.uid),
+        )
 
         for msg in messages:
             stats["scanned"] += 1
@@ -361,7 +461,7 @@ def main() -> None:
                 data = process_message(client, msg, stats)
                 if data is None:
                     continue
-                save_transaction(data)
+                save_result(data)
                 stats["saved"] += 1
                 if data["needs_review"]:
                     stats["needs_review"] += 1
@@ -371,6 +471,8 @@ def main() -> None:
                 print(f"Error processing message uid={getattr(msg, 'uid', '?')}: {e}")
                 continue
 
+    drop_matched_transfers(stats)
+
     print("\n--- Ingestion summary ---")
     print(f"Total emails scanned:      {stats['scanned']}")
     print(f"Skipped (not allowlisted): {stats['skipped_not_allowlisted']}")
@@ -379,6 +481,8 @@ def main() -> None:
     print(f"Skipped (listing only):    {stats['skipped_listing']}")
     print(f"Skipped (delisting):       {stats['skipped_delisting']}")
     print(f"Skipped (duplicate order): {stats['skipped_duplicate_order']}")
+    print(f"Skipped (transfer of saved): {stats['skipped_transfer']}")
+    print(f"Dropped (transfer matched later): {stats['dropped_matched_transfer']}")
     print(f"Saved as transactions:     {stats['saved']}")
     print(f"Flagged needs_review:      {stats['needs_review']}")
     print(f"Errors:                    {stats['errors']}")

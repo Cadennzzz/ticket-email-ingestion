@@ -33,6 +33,14 @@ class TicketTransaction(BaseModel):
         description="True if this email is a ticket purchase/sale/transfer/refund confirmation."
     )
 
+    # Which email in a chain this is. ingest.py decides from this whether
+    # the email is the authoritative record (receipt, completed sale) or a
+    # follow-up to skip.
+    email_kind: Optional[Literal[
+        "purchase_receipt", "purchase_update", "sale_completed",
+        "sale_listing", "sale_delisting", "transfer_out", "unclear",
+    ]] = None
+
     transaction_type: Optional[Literal["buy", "sell"]] = None
     platform: Optional[Literal[PLATFORMS]] = None
     order_id: Optional[str] = None
@@ -85,6 +93,23 @@ confirmation, set is_ticket_transaction to false and leave every other field nul
 Do not force a classification on marketing emails, event reminders, or unrelated receipts.
 - transaction_type is "buy" if the user acquired/paid for tickets, "sell" if the \
 user listed, transferred out, or received payout for tickets they sold.
+- email_kind says which email in the chain this is. Judge it from what the \
+email says happened, not from which amounts it shows:
+  - "purchase_receipt": the order confirmation or receipt for tickets the user \
+bought, e.g. "Thanks for your order" with an order total, "Order Confirmed".
+  - "purchase_update": a follow-up about tickets the user already bought: \
+"tickets delivered", "your tickets are ready", "here's your ticket", someone \
+"transferred tickets to you".
+  - "sale_completed": the user's tickets actually sold, e.g. "tickets sold", \
+"TICKETS SOLD", with a sale total or payout.
+  - "sale_listing": tickets were listed for sale and have not sold, e.g. "You \
+listed", "successfully listed for sale" — even if it shows an expected payout.
+  - "sale_delisting": a listing was removed, e.g. "no longer for sale", "you \
+deleted your ticket listing".
+  - "transfer_out": the user transferred tickets to someone else, or someone \
+claimed/accepted tickets the user transferred, with no sale price.
+  - "unclear": a ticket email that doesn't clearly fit one of these. Do not \
+guess — use "unclear", set needs_review to true, and say why in review_reason.
 - total_price is the final amount charged/received, including fees, if stated. \
 price_per_ticket is total_price / quantity unless the email states it directly.
 - For a sale, total_price is the gross sale amount (what the tickets sold for, e.g. \

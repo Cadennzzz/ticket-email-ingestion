@@ -8,6 +8,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from crosscheck import same_event
+
 DB_PATH = Path(__file__).parent / "transactions.db"
 
 SCHEMA = """
@@ -43,7 +45,8 @@ CREATE TABLE IF NOT EXISTS transactions (
     sender TEXT,
     sender_name TEXT,
     recipient TEXT,
-    received_date TEXT
+    received_date TEXT,
+    email_kind TEXT
 );
 """
 
@@ -59,6 +62,7 @@ _MIGRATIONS = [
     ("sender_name", "TEXT"),
     ("recipient", "TEXT"),
     ("received_date", "TEXT"),
+    ("email_kind", "TEXT"),
 ]
 
 COLUMNS = [
@@ -91,6 +95,7 @@ COLUMNS = [
     "sender_name",
     "recipient",
     "received_date",
+    "email_kind",
 ]
 
 
@@ -133,21 +138,79 @@ def is_processed(uid: str) -> bool:
         conn.close()
 
 
-def find_order(platform: str, order_id: str, transaction_type: str) -> Optional[int]:
+def find_order(platform: str, order_id: str, transaction_type: str) -> Optional[dict]:
     """
-    Return the id of an existing row for this platform + order number +
-    buy/sell, or None. Platforms send several emails per order (confirmation,
-    "tickets delivered", ...), each extracting to the same transaction.
+    Return the existing row (id, email_kind, source, promoted) for this
+    platform + order number + buy/sell, or None. Platforms send several
+    emails per order (confirmation, "tickets delivered", ...), each
+    extracting to the same transaction.
     """
     conn = get_connection()
+    conn.row_factory = sqlite3.Row
     try:
         cur = conn.execute(
-            "SELECT id FROM transactions WHERE platform = ? AND TRIM(order_id) = ? "
-            "AND transaction_type = ? ORDER BY id LIMIT 1",
+            "SELECT id, email_kind, source, promoted FROM transactions WHERE platform = ? "
+            "AND TRIM(order_id) = ? AND transaction_type = ? ORDER BY id LIMIT 1",
             (platform, order_id.strip(), transaction_type),
         )
         row = cur.fetchone()
-        return row[0] if row else None
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# Rows saved from a transfer email, which has no order number or price of
+# its own. They record that tickets moved, not a purchase or sale in
+# themselves.
+TRANSFER_ROW_SQL = (
+    "(source = 'email' AND order_id IS NULL AND total_price IS NULL "
+    "AND price_per_ticket IS NULL AND email_kind IN ('transfer_out', 'purchase_update'))"
+)
+
+
+def find_same_event(transaction_type: str, event_date: str, quantity: int, event_name: str) -> Optional[int]:
+    """
+    Return the id of a saved purchase/sale (any source) with the same
+    buy/sell, event date, and quantity whose event name shares a significant
+    word, or None. Used to tie a transfer email, which has no order number,
+    to the purchase or sale it delivers. Other transfer rows never count.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT id, artist_or_event FROM transactions WHERE transaction_type = ? "
+            f"AND event_date = ? AND quantity = ? AND NOT {TRANSFER_ROW_SQL} ORDER BY id",
+            (transaction_type, event_date, quantity),
+        ).fetchall()
+    finally:
+        conn.close()
+    return next((row_id for row_id, name in rows if same_event(name, event_name)), None)
+
+
+def unmatched_transfer_rows() -> list:
+    """Unpromoted rows saved from transfer emails, as dicts."""
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT id, raw_email_uid, transaction_type, event_date, quantity, artist_or_event "
+            f"FROM transactions WHERE promoted = 0 AND {TRANSFER_ROW_SQL} ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def delete_email_row(row_id: int) -> bool:
+    """Delete an unpromoted email-sourced row; returns whether one was deleted.
+    Never touches source='excel' rows or promoted ones."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "DELETE FROM transactions WHERE id = ? AND source = 'email' AND promoted = 0", (row_id,)
+        )
+        conn.commit()
+        return cur.rowcount == 1
     finally:
         conn.close()
 
