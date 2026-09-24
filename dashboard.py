@@ -315,6 +315,14 @@ df["promoted"] = df["promoted"].fillna(0).astype(bool)
 excel_df = df[df["source"] == "excel"].copy()
 
 
+def after_fees(sells: pd.DataFrame) -> pd.Series:
+    """What each sell row actually paid out. SL "Total Sale After Fees" is
+    Tickets Sold × Sell Price in the workbook (and what match.py uses for
+    matched-pair P&L); the DB's total_price is Gross Sale, so rebuild it."""
+    price = pd.to_numeric(sells["price_per_ticket"], errors="coerce")
+    return (sells["quantity"] * price).fillna(sells["total_price"])
+
+
 def _records(frame: pd.DataFrame) -> list:
     return frame.astype(object).where(pd.notnull(frame), None).to_dict("records")
 
@@ -339,8 +347,9 @@ sells = excel_df[excel_df["transaction_type"] == "sell"]
 total_bought = buys["quantity"].sum()
 total_sold = sells["quantity"].sum()
 total_spent = buys["total_price"].sum()
-total_revenue = sells["total_price"].sum()
-has_both_sides = buys["total_price"].notna().any() and sells["total_price"].notna().any()
+sell_after_fees = after_fees(sells)
+total_revenue = sell_after_fees.sum()
+has_both_sides = buys["total_price"].notna().any() and sell_after_fees.notna().any()
 review_count = int(df["needs_review"].sum())
 
 # --- Header band ---------------------------------------------------------------
@@ -382,7 +391,11 @@ with st.container(border=True, key="zone-overview"):
             stat_grid(
                 [
                     stat_card("Total spent", money_html(total_spent if pd.notna(total_spent) else 0.0)),
-                    stat_card("Total revenue", money_html(total_revenue if pd.notna(total_revenue) else 0.0)),
+                    stat_card(
+                        "Total revenue",
+                        money_html(total_revenue if pd.notna(total_revenue) else 0.0),
+                        sub="after fees",
+                    ),
                     stat_card(
                         "Realized profit",
                         money_html(profit, signed=True),
@@ -421,10 +434,7 @@ def build_event_lookup(excel_df: pd.DataFrame) -> pd.DataFrame:
         cost=("total_price", "sum"),
     )
 
-    # SL "Total Sale After Fees" is Tickets Sold × Sell Price in the
-    # workbook; the DB's total_price is Gross Sale, so rebuild it.
-    sl["price_per_ticket"] = pd.to_numeric(sl["price_per_ticket"], errors="coerce")
-    sl["after_fees"] = (sl["quantity"] * sl["price_per_ticket"]).fillna(sl["total_price"])
+    sl["after_fees"] = after_fees(sl)
     sl["transferred"] = sl["quantity"].where(sl["transfer_status"] == "transferred", 0)
     # Excel's SUMIFS matches names case-insensitively ('max styler' counts
     # toward 'Max Styler'), so join on a casefolded key.
