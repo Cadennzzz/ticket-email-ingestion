@@ -50,6 +50,20 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 """
 
+# Emails the pipeline read and deliberately didn't save (listings,
+# delistings, duplicate-order notices, transfers of a saved purchase/sale,
+# non-transactions). Recorded so later runs don't send them to Gemini again;
+# reprocess.py --replace clears a uid's entry to re-run it.
+SKIPPED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS skipped_emails (
+    raw_email_uid TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    detail TEXT,
+    subject TEXT,
+    skipped_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 # Columns added after the original schema shipped. Each is added via
 # ALTER TABLE on existing databases the first time get_connection() sees
 # them missing (see _migrate). New databases get them from SCHEMA above
@@ -121,6 +135,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute(SCHEMA)
+    conn.execute(SKIPPED_SCHEMA)
     _migrate(conn)
     conn.commit()
     return conn
@@ -138,9 +153,44 @@ def is_processed(uid: str) -> bool:
         conn.close()
 
 
+def is_skipped(uid: str) -> bool:
+    """Return True if this email was read before and deliberately not saved."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT 1 FROM skipped_emails WHERE raw_email_uid = ? LIMIT 1", (uid,)
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def record_skip(uid: str, reason: str, detail: Optional[str] = None, subject: Optional[str] = None) -> None:
+    """Record that email `uid` was read and not saved, and why."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO skipped_emails (raw_email_uid, reason, detail, subject) VALUES (?, ?, ?, ?)",
+            (str(uid), reason, detail, subject),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_skips(uids: list) -> None:
+    """Forget recorded skips for these uids, so they're processed again."""
+    conn = get_connection()
+    try:
+        conn.executemany("DELETE FROM skipped_emails WHERE raw_email_uid = ?", [(str(u),) for u in uids])
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def find_order(platform: str, order_id: str, transaction_type: str) -> Optional[dict]:
     """
-    Return the existing row (id, email_kind, source, promoted) for this
+    Return the existing row (id, raw_email_uid, email_kind, source, promoted) for this
     platform + order number + buy/sell, or None. Platforms send several
     emails per order (confirmation, "tickets delivered", ...), each
     extracting to the same transaction.
@@ -149,7 +199,7 @@ def find_order(platform: str, order_id: str, transaction_type: str) -> Optional[
     conn.row_factory = sqlite3.Row
     try:
         cur = conn.execute(
-            "SELECT id, email_kind, source, promoted FROM transactions WHERE platform = ? "
+            "SELECT id, raw_email_uid, email_kind, source, promoted FROM transactions WHERE platform = ? "
             "AND TRIM(order_id) = ? AND transaction_type = ? ORDER BY id LIMIT 1",
             (platform, order_id.strip(), transaction_type),
         )

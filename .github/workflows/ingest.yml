@@ -31,9 +31,12 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           before=$(sqlite3 transactions.db "SELECT COUNT(*) FROM transactions;" 2>/dev/null || echo 0)
+          skipped_before=$(sqlite3 transactions.db "SELECT COUNT(*) FROM skipped_emails;" 2>/dev/null || echo 0)
           python ingest.py
           after=$(sqlite3 transactions.db "SELECT COUNT(*) FROM transactions;" 2>/dev/null || echo 0)
+          skipped_after=$(sqlite3 transactions.db "SELECT COUNT(*) FROM skipped_emails;" 2>/dev/null || echo 0)
           echo "NEW_COUNT=$((after - before))" >> "$GITHUB_ENV"
+          echo "NEW_SKIPPED=$((skipped_after - skipped_before))" >> "$GITHUB_ENV"
 
       - name: Run matching
         run: |
@@ -55,8 +58,10 @@ jobs:
           # on every run even when no new transactions came in. Gating on
           # NEW_COUNT (real new rows from ingest.py) instead of a raw file
           # diff avoids committing on every scheduled run with nothing new.
-          if [ "${NEW_COUNT:-0}" -le 0 ]; then
-            echo "No new transactions this run; skipping commit."
+          # NEW_SKIPPED counts too: newly recorded skips must be committed or
+          # the next run sends those emails to Gemini again.
+          if [ "${NEW_COUNT:-0}" -le 0 ] && [ "${NEW_SKIPPED:-0}" -le 0 ]; then
+            echo "No new transactions or skips this run; skipping commit."
             exit 0
           fi
 
@@ -65,6 +70,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "New transactions were found but tracked files are unchanged; skipping commit."
           else
-            git commit -m "chore: pipeline run $(date -u +%Y-%m-%d) (${NEW_COUNT} new transactions, ${MATCH_COUNT:-0} matched pairs)"
+            git commit -m "chore: pipeline run $(date -u +%Y-%m-%d) (${NEW_COUNT} new transactions, ${NEW_SKIPPED:-0} skipped, ${MATCH_COUNT:-0} matched pairs)"
             git push
           fi

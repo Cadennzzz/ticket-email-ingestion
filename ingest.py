@@ -2,7 +2,8 @@
 Main ingestion script.
 
 Scans the inbox via IMAP, filters to allowlisted ticket-platform senders,
-skips anything already in the DB, sends the rest to Gemini for structured
+skips anything already in the DB (saved, or recorded in skipped_emails as
+deliberately not saved), sends the rest to Gemini for structured
 extraction, and stores confirmed ticket transactions in transactions.db.
 
 If extraction finds no price in the email body, falls back to fetching a
@@ -42,6 +43,8 @@ from db import (
     find_order,
     find_same_event,
     is_processed,
+    is_skipped,
+    record_skip,
     save_transaction,
     unmatched_transfer_rows,
 )
@@ -244,9 +247,12 @@ def email_header_fields(msg) -> dict:
     }
 
 
-def _skip(stats: dict, key: str, uid, why: str) -> None:
-    print(f"  Skipping uid={uid}: {why}")
+def _skip(stats: dict, key: str, msg, why: str) -> None:
+    """Count a skip and record it in skipped_emails so later runs don't
+    send this email to Gemini again. `key` is the stats key, "skipped_<reason>"."""
+    print(f"  Skipping uid={msg.uid}: {why}")
     stats[key] += 1
+    record_skip(msg.uid, key[len("skipped_"):], why, msg.subject)
 
 
 def _flag(result: TicketTransaction, reason: str) -> None:
@@ -265,8 +271,9 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     transfers that deliver an already-saved purchase or sale) are skipped.
     Anything the model can't place is saved with needs_review set.
 
-    If the returned row carries "replaces_id", save it with save_result(),
-    which removes the lesser row it supersedes.
+    Skipped emails are recorded in skipped_emails. If the returned row
+    carries "replaces_id", save it with save_result(), which removes the
+    lesser row it supersedes.
     """
     body = email_body_text(msg.text, msg.html)
 
@@ -280,6 +287,7 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     )
 
     if not result.is_ticket_transaction:
+        _skip(stats, "skipped_not_transaction", msg, "not a ticket transaction")
         return None
 
     kind = result.email_kind
@@ -287,16 +295,16 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     # Listing confirmations ("You listed ... tickets") aren't
     # sales — the matching "sold" email is what counts.
     if kind == "sale_listing" or result.transfer_status == "listed":
-        _skip(stats, "skipped_listing", msg.uid, "listing, not a sale")
+        _skip(stats, "skipped_listing", msg, "listing, not a sale")
         return None
 
     # "You deleted your listing" emails aren't sales either.
     if kind == "sale_delisting" or result.transfer_status == "delisted":
-        _skip(stats, "skipped_delisting", msg.uid, "listing removed, not a sale")
+        _skip(stats, "skipped_delisting", msg, "listing removed, not a sale")
         return None
 
     platform = platform_for_sender(msg.from_) or result.platform
-    replaces_id = None
+    replaces_id = replaces_uid = None
 
     # Confirmation + "tickets delivered" emails for one order extract to the
     # same transaction. Keep one row per order; a receipt supersedes a row
@@ -312,10 +320,11 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
                 and not existing["promoted"]
             )
             if not upgradable:
-                _skip(stats, "skipped_duplicate_order", msg.uid,
+                _skip(stats, "skipped_duplicate_order", msg,
                       f"{platform} order {result.order_id} already saved as id={existing['id']}")
                 return None
             replaces_id = existing["id"]
+            replaces_uid = existing["raw_email_uid"]
 
     has_price = result.total_price is not None or result.price_per_ticket is not None
     if not has_price and kind != "transfer_out":
@@ -352,7 +361,7 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
                 result.transaction_type, result.event_date, result.quantity, result.artist_or_event
             )
         if match_id is not None:
-            _skip(stats, "skipped_transfer", msg.uid, f"transfer for already-saved id={match_id}")
+            _skip(stats, "skipped_transfer", msg, f"transfer for already-saved id={match_id}")
             return None
         if kind == "transfer_out":
             _flag(result, "transfer out with no sale price — possibly an off-platform sale")
@@ -373,13 +382,17 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     data["source"] = "email"
     data.update(email_header_fields(msg))
     data["replaces_id"] = replaces_id
+    data["replaces_uid"] = replaces_uid
     return data
 
 
 def save_result(data: dict) -> None:
-    """Save a row from process_message, first removing the row it supersedes."""
+    """Save a row from process_message, first removing the row it supersedes
+    (and recording that row's email as skipped, so it isn't re-extracted)."""
     if data.get("replaces_id") is not None:
-        delete_email_row(data["replaces_id"])
+        if delete_email_row(data["replaces_id"]):
+            record_skip(data["replaces_uid"], "duplicate_order",
+                        f"superseded by receipt uid={data['raw_email_uid']}")
         print(f"  uid={data['raw_email_uid']} replaces id={data['replaces_id']}")
     save_transaction(data)
 
@@ -397,6 +410,7 @@ def drop_matched_transfers(stats: dict) -> None:
             row["transaction_type"], row["event_date"], row["quantity"], row["artist_or_event"]
         )
         if match_id is not None and delete_email_row(row["id"]):
+            record_skip(row["raw_email_uid"], "transfer", f"transfer for already-saved id={match_id} (dropped after saving)")
             print(f"  Dropped transfer row id={row['id']} (uid={row['raw_email_uid']}): delivers id={match_id}")
             stats["dropped_matched_transfer"] += 1
 
@@ -425,6 +439,7 @@ def main() -> None:
         "scanned": 0,
         "skipped_not_allowlisted": 0,
         "skipped_already_processed": 0,
+        "skipped_recorded": 0,
         "sent_to_llm": 0,
         "saved": 0,
         "needs_review": 0,
@@ -435,6 +450,7 @@ def main() -> None:
         "skipped_delisting": 0,
         "skipped_duplicate_order": 0,
         "skipped_transfer": 0,
+        "skipped_not_transaction": 0,
         "dropped_matched_transfer": 0,
     }
 
@@ -458,6 +474,10 @@ def main() -> None:
                     stats["skipped_already_processed"] += 1
                     continue
 
+                if is_skipped(msg.uid):
+                    stats["skipped_recorded"] += 1
+                    continue
+
                 data = process_message(client, msg, stats)
                 if data is None:
                     continue
@@ -477,11 +497,13 @@ def main() -> None:
     print(f"Total emails scanned:      {stats['scanned']}")
     print(f"Skipped (not allowlisted): {stats['skipped_not_allowlisted']}")
     print(f"Skipped (already processed): {stats['skipped_already_processed']}")
+    print(f"Skipped (recorded skip):   {stats['skipped_recorded']}")
     print(f"Sent to LLM:               {stats['sent_to_llm']}")
     print(f"Skipped (listing only):    {stats['skipped_listing']}")
     print(f"Skipped (delisting):       {stats['skipped_delisting']}")
     print(f"Skipped (duplicate order): {stats['skipped_duplicate_order']}")
     print(f"Skipped (transfer of saved): {stats['skipped_transfer']}")
+    print(f"Skipped (not a transaction): {stats['skipped_not_transaction']}")
     print(f"Dropped (transfer matched later): {stats['dropped_matched_transfer']}")
     print(f"Saved as transactions:     {stats['saved']}")
     print(f"Flagged needs_review:      {stats['needs_review']}")

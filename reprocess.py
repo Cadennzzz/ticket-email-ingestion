@@ -10,8 +10,9 @@ Usage:
     python reprocess.py 64 65 66 --replace    # dry run, re-extracting uids already saved
     python reprocess.py 64 65 66 --replace --apply
 
---replace deletes the existing unpromoted email rows for the given uids
-before re-extracting them; without it, already-saved uids are left alone.
+--replace deletes the existing unpromoted email rows and recorded skips
+(skipped_emails) for the given uids before re-extracting them; without it,
+already-saved and already-skipped uids are left alone.
 Emails are processed in ascending uid order (as ingest.py does), paced to
 stay under Gemini's free-tier limit of 15 requests/minute.
 """
@@ -55,6 +56,7 @@ def run(uids: list, db_path: Path, replace: bool = False) -> list:
         )
         conn.commit()
         conn.close()
+        db.clear_skips(uids)
 
     client = genai.Client(api_key=ingest.GEMINI_API_KEY)
     with MailBox("imap.gmail.com").login(ingest.GMAIL_USER, ingest.GMAIL_APP_PASSWORD) as mailbox:
@@ -68,6 +70,9 @@ def run(uids: list, db_path: Path, replace: bool = False) -> list:
             continue
         if db.is_processed(uid):
             results.append({"uid": uid, "subject": msg.subject, "outcome": "already saved", "row": None, "reason": None})
+            continue
+        if db.is_skipped(uid):
+            results.append({"uid": uid, "subject": msg.subject, "outcome": "already skipped", "row": None, "reason": None})
             continue
 
         started = time.time()
