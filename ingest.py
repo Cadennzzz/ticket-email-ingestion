@@ -454,6 +454,9 @@ def main() -> None:
         "dropped_matched_transfer": 0,
     }
 
+    # Fetch everything, then log out before processing. Gemini calls (with
+    # retries) can take 20+ minutes, and Gmail drops an idle IMAP connection
+    # long before that, which made LOGOUT fail and crash the run.
     with MailBox("imap.gmail.com").login(GMAIL_USER, GMAIL_APP_PASSWORD) as mailbox:
         # Fetch the newest N, then process oldest first: a receipt normally
         # arrives before its "delivered" notices and a sale before its
@@ -463,33 +466,33 @@ def main() -> None:
             key=lambda m: int(m.uid),
         )
 
-        for msg in messages:
-            stats["scanned"] += 1
-            try:
-                if not is_allowlisted(msg.from_):
-                    stats["skipped_not_allowlisted"] += 1
-                    continue
-
-                if is_processed(msg.uid):
-                    stats["skipped_already_processed"] += 1
-                    continue
-
-                if is_skipped(msg.uid):
-                    stats["skipped_recorded"] += 1
-                    continue
-
-                data = process_message(client, msg, stats)
-                if data is None:
-                    continue
-                save_result(data)
-                stats["saved"] += 1
-                if data["needs_review"]:
-                    stats["needs_review"] += 1
-
-            except Exception as e:
-                stats["errors"] += 1
-                print(f"Error processing message uid={getattr(msg, 'uid', '?')}: {e}")
+    for msg in messages:
+        stats["scanned"] += 1
+        try:
+            if not is_allowlisted(msg.from_):
+                stats["skipped_not_allowlisted"] += 1
                 continue
+
+            if is_processed(msg.uid):
+                stats["skipped_already_processed"] += 1
+                continue
+
+            if is_skipped(msg.uid):
+                stats["skipped_recorded"] += 1
+                continue
+
+            data = process_message(client, msg, stats)
+            if data is None:
+                continue
+            save_result(data)
+            stats["saved"] += 1
+            if data["needs_review"]:
+                stats["needs_review"] += 1
+
+        except Exception as e:
+            stats["errors"] += 1
+            print(f"Error processing message uid={getattr(msg, 'uid', '?')}: {e}")
+            continue
 
     drop_matched_transfers(stats)
 
