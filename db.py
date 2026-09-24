@@ -6,6 +6,7 @@ One row per TicketTransaction, keyed for dedupe on raw_email_uid.
 
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 DB_PATH = Path(__file__).parent / "transactions.db"
 
@@ -128,6 +129,25 @@ def is_processed(uid: str) -> bool:
             "SELECT 1 FROM transactions WHERE raw_email_uid = ? LIMIT 1", (uid,)
         )
         return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def find_order(platform: str, order_id: str, transaction_type: str) -> Optional[int]:
+    """
+    Return the id of an existing row for this platform + order number +
+    buy/sell, or None. Platforms send several emails per order (confirmation,
+    "tickets delivered", ...), each extracting to the same transaction.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT id FROM transactions WHERE platform = ? AND TRIM(order_id) = ? "
+            "AND transaction_type = ? ORDER BY id LIMIT 1",
+            (platform, order_id.strip(), transaction_type),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
     finally:
         conn.close()
 

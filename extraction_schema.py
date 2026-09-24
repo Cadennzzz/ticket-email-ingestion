@@ -57,7 +57,7 @@ class TicketTransaction(BaseModel):
     )
     currency: Optional[str] = Field(default=None, description="ISO 4217, e.g. USD")
     transfer_status: Optional[Literal[
-        "transferred", "pending", "listed", "sold", "refunded", "cancelled"
+        "transferred", "pending", "listed", "delisted", "sold", "refunded", "cancelled"
     ]] = None
     confirmation_number: Optional[str] = None
 
@@ -96,6 +96,9 @@ from other amounts. Leave payout_amount null for purchases.
 - Only populate fees if the email itemizes them separately from the total.
 - If the email only confirms that tickets were listed for sale (not yet sold), \
 set transfer_status to "listed".
+- If the email only confirms that a listing was removed, deleted, or taken down \
+(tickets no longer for sale, nothing sold), set transfer_status to "delisted". \
+Use "cancelled" only for a cancelled order or sale, never for a removed listing.
 - Dates: event_date as YYYY-MM-DD. purchase_date is when this transaction/email \
 occurred, not the event date.
 - If you cannot confidently determine transaction_type or total_price, still fill \

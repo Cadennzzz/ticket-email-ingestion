@@ -37,7 +37,7 @@ from tenacity import (
 )
 
 from allowlist import is_allowlisted, platform_for_sender
-from db import is_processed, save_transaction
+from db import find_order, is_processed, save_transaction
 from extraction_schema import EXTRACTION_PROMPT, TicketTransaction
 
 load_dotenv()
@@ -258,6 +258,21 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
         stats["skipped_listing"] += 1
         return None
 
+    # "You deleted your listing" emails aren't sales either.
+    if result.transfer_status == "delisted":
+        stats["skipped_delisting"] += 1
+        return None
+
+    # Confirmation + "tickets delivered" emails for one order extract to the
+    # same transaction; keep only the first one seen.
+    platform = platform_for_sender(msg.from_) or result.platform
+    if platform and result.order_id and result.transaction_type:
+        existing_id = find_order(platform, result.order_id, result.transaction_type)
+        if existing_id is not None:
+            print(f"  Skipping uid={msg.uid}: {platform} order {result.order_id} already saved as id={existing_id}")
+            stats["skipped_duplicate_order"] += 1
+            return None
+
     if result.total_price is None and result.price_per_ticket is None:
         stats["link_fallback_attempted"] += 1
         try:
@@ -279,7 +294,7 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
             result = fallback_result
 
     result.raw_email_uid = msg.uid
-    result.platform = platform_for_sender(msg.from_) or result.platform
+    result.platform = platform
     data = result.model_dump()
     # Scraped transactions stay isolated from the canonical
     # (source='excel') dataset until explicitly promoted —
@@ -320,6 +335,8 @@ def main() -> None:
         "link_fallback_attempted": 0,
         "link_fallback_recovered_price": 0,
         "skipped_listing": 0,
+        "skipped_delisting": 0,
+        "skipped_duplicate_order": 0,
     }
 
     with MailBox("imap.gmail.com").login(GMAIL_USER, GMAIL_APP_PASSWORD) as mailbox:
@@ -355,6 +372,8 @@ def main() -> None:
     print(f"Skipped (already processed): {stats['skipped_already_processed']}")
     print(f"Sent to LLM:               {stats['sent_to_llm']}")
     print(f"Skipped (listing only):    {stats['skipped_listing']}")
+    print(f"Skipped (delisting):       {stats['skipped_delisting']}")
+    print(f"Skipped (duplicate order): {stats['skipped_duplicate_order']}")
     print(f"Saved as transactions:     {stats['saved']}")
     print(f"Flagged needs_review:      {stats['needs_review']}")
     print(f"Errors:                    {stats['errors']}")
