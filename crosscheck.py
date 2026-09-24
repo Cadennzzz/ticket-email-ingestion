@@ -10,6 +10,7 @@ events that happen to coincide on those.
 """
 
 import re
+from datetime import date
 from itertools import combinations
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -40,6 +41,13 @@ def same_event(a, b) -> bool:
 # emails summing to $465.50).
 TOTAL_TOLERANCE = 1.00
 
+# A sheet line dated well before the email's transaction can't record it
+# (email 561, a Lysted sale on 9/24, matched sl-187, a $140 Cash sale on
+# 9/06, on total alone). The sheet is filled in after the fact, so its date
+# is normally on or after the email's; one day of slack covers email
+# timestamps in UTC vs local dates in the sheet.
+DATE_SLACK_DAYS = 1
+
 # Largest group of email rows tried against one Excel row. Keeps the subset
 # search trivial; real groups so far are 2-3 rows (one email per ticket).
 MAX_GROUP = 6
@@ -56,11 +64,28 @@ def _usable(row) -> bool:
     )
 
 
+def _day(value):
+    """Date part of a stored purchase_date ('YYYY-MM-DD...'), or None."""
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _excel_predates(email_row, excel_row) -> bool:
+    email_day = _day(email_row.get("purchase_date"))
+    excel_day = _day(excel_row.get("purchase_date"))
+    if email_day is None or excel_day is None:
+        return False
+    return (email_day - excel_day).days > DATE_SLACK_DAYS
+
+
 def _compatible(email_row, excel_row) -> bool:
     return (
         email_row["transaction_type"] == excel_row["transaction_type"]
         and email_row["event_date"] == excel_row["event_date"]
         and same_event(email_row.get("artist_or_event"), excel_row.get("artist_or_event"))
+        and not _excel_predates(email_row, excel_row)
     )
 
 
@@ -72,10 +97,11 @@ def find_excel_matches(email_rows: list, excel_rows: list) -> dict:
     """
     Map email row id -> id of the source='excel' row that already records
     it. Rows are dicts with id, transaction_type, event_date, quantity,
-    total_price, artist_or_event.
+    total_price, artist_or_event, and optionally purchase_date.
 
     An email row matches an Excel row with the same buy/sell, event date,
-    and a shared event word when quantity is equal and total is within
+    and a shared event word, not dated more than DATE_SLACK_DAYS before
+    the email (when both have a purchase_date), when quantity is equal and total is within
     TOTAL_TOLERANCE -- either on its own, or as part of a group of email
     rows whose quantities and totals sum to the Excel row's (per-ticket
     emails recorded as one Excel line). Each Excel row covers at most one
