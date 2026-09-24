@@ -31,19 +31,30 @@ POS = "#22c55e"
 NEG = "#ef4444"
 MUTED = "#8b9ab5"
 BORDER = "#1e2a44"
-BUY_COLOR = ACCENT
-SELL_COLOR = "#818cf8"
+# Chart marks sit one step darker than the UI accent so they land in the
+# dark-surface lightness band; checked with the dataviz palette validator
+# (CVD, contrast, chroma) against the zone surface #0f1729.
+BUY_COLOR = "#0d9488"
+SELL_COLOR = "#6366f1"
+PLATFORM_COLOR = "#0284c7"  # its own hue: platforms are neither buys nor sells
 
 st.markdown(
     f"""
 <style>
 :root {{
   --accent: {ACCENT}; --warn: {WARN}; --pos: {POS}; --neg: {NEG};
-  --muted: {MUTED}; --border: {BORDER}; --card: #111a2e; --card-2: #0f1729;
+  --muted: {MUTED}; --border: {BORDER}; --card: #131d34; --card-2: #0f1729;
+  --ink: #e2e8f0;
   --mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --lbl: .66rem;  /* every small uppercase label shares this size */
+  --lift: inset 0 1px 0 rgba(255,255,255,.035);
 }}
-.block-container {{ padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1400px; }}
-[data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {{ gap: 1.5rem; }}
+.block-container {{ padding-top: 2rem; padding-bottom: 3rem; max-width: 1400px; }}
+[data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {{ gap: 1.1rem; }}
+[data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{ color: var(--muted); font-size: .8rem; }}
+/* Streamlit pulls markdown up by -1rem to hide a trailing <p> margin; our
+   HTML blocks have none, so that pull made cards sit flush on zone edges. */
+[data-testid="stMarkdownContainer"]:has(> .stats, > .card, > .banner, > .src-lines) {{ margin-bottom: 0; }}
 [class*="st-key-grp-"], [class*="st-key-flag-"] {{ margin-bottom: -.55rem; }}
 footer, #MainMenu {{ visibility: hidden; }}
 
@@ -55,18 +66,19 @@ footer, #MainMenu {{ visibility: hidden; }}
 .hdr .meta {{ color: var(--muted); font-family: var(--mono); font-size: .78rem; }}
 
 /* Section heads */
-.sec {{ display: flex; align-items: center; gap: .6rem; margin: 0 0 .15rem 0; }}
-.sec .eyebrow {{ font-family: var(--mono); font-size: .68rem; letter-spacing: .14em;
+.sec {{ display: flex; align-items: baseline; gap: .6rem; margin: 0 0 .3rem 0; }}
+.sec .eyebrow {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .14em;
   text-transform: uppercase; color: var(--tone); }}
-.sec .title {{ font-size: 1.12rem; font-weight: 650; color: #e2e8f0; }}
+.sec .title {{ font-size: 1.1rem; font-weight: 650; color: var(--ink); letter-spacing: -.01em; }}
 .pill {{ font-family: var(--mono); font-size: .72rem; padding: .1rem .5rem; border-radius: 999px;
   background: color-mix(in srgb, var(--tone) 16%, transparent); color: var(--tone);
   border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent); }}
-.sec-sub {{ color: var(--muted); font-size: .8rem; margin: 0 0 .4rem 0; }}
+.sec-sub {{ color: var(--muted); font-size: .8rem; margin: -.1rem 0 .5rem 0; }}
 
 /* Zones = keyed bordered containers, each with a colored top rule */
-[class*="st-key-zone-"] {{ background: var(--card-2); border-top: 2px solid var(--zone, var(--border)) !important; }}
-.st-key-zone-overview {{ --zone: var(--accent); }}
+[class*="st-key-zone-"] {{ background: var(--card-2); border-top: 2px solid var(--zone, var(--border)) !important;
+  box-shadow: var(--lift); }}
+.st-key-zone-overview, .st-key-zone-lookup {{ --zone: var(--accent); }}
 .st-key-zone-pending  {{ --zone: var(--accent); }}
 .st-key-zone-review   {{ --zone: var(--warn); }}
 .st-key-zone-charts, .st-key-zone-matches, .st-key-zone-all {{ --zone: #334155; }}
@@ -74,8 +86,8 @@ footer, #MainMenu {{ visibility: hidden; }}
 /* Stat cards */
 .stats {{ display: grid; gap: .6rem; }}
 .card {{ background: var(--card); border: 1px solid var(--border); border-radius: .6rem;
-  padding: .7rem .9rem .75rem; min-width: 0; }}
-.card .lbl {{ font-family: var(--mono); font-size: .66rem; letter-spacing: .12em;
+  padding: .65rem .85rem .7rem; min-width: 0; min-height: 6.4rem; box-shadow: var(--lift); }}
+.card .lbl {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .12em;
   text-transform: uppercase; color: var(--muted); }}
 .card .val {{ font-family: var(--mono); font-size: 1.55rem; font-weight: 600;
   font-variant-numeric: tabular-nums; margin-top: .15rem; white-space: nowrap; }}
@@ -85,9 +97,15 @@ footer, #MainMenu {{ visibility: hidden; }}
 .card.warn .val, .card.warn .lbl {{ color: var(--warn); }}
 .card.pos {{ border-color: color-mix(in srgb, var(--pos) 40%, transparent); }}
 .card.neg {{ border-color: color-mix(in srgb, var(--neg) 40%, transparent); }}
-.group-lbl {{ font-family: var(--mono); font-size: .66rem; letter-spacing: .14em;
+.group-lbl {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .14em;
   text-transform: uppercase; color: var(--muted); margin: .1rem 0 .35rem; }}
 .pos {{ color: var(--pos); }} .neg {{ color: var(--neg); }} .na {{ color: var(--muted); }}
+.card .val.sm {{ font-size: 1.05rem; white-space: normal; line-height: 1.35; padding-top: .2rem; }}
+
+/* Event lookup */
+.ev-head {{ display: flex; align-items: baseline; flex-wrap: wrap; gap: .35rem .9rem; margin: .35rem 0 .6rem; }}
+.ev-head .name {{ font-size: 1.25rem; font-weight: 650; color: var(--ink); letter-spacing: -.01em; }}
+.ev-head .meta {{ font-family: var(--mono); font-size: .78rem; color: var(--muted); }}
 
 /* Banner + callouts */
 .banner {{ display: flex; gap: .7rem; align-items: center; padding: .6rem .9rem; border-radius: .6rem;
@@ -98,7 +116,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 .callout {{ border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent);
   color: #fde68a; padding: .45rem .75rem; border-radius: 0 .4rem .4rem 0; font-size: .84rem; margin-bottom: .4rem; }}
 .chip {{ display: inline-flex; gap: .45rem; align-items: center; font-size: .82rem; margin-bottom: .3rem; }}
-.chip .k {{ font-family: var(--mono); font-size: .64rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }}
+.chip .k {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }}
 .chip .v {{ font-family: var(--mono); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); padding: .08rem .45rem; border-radius: .35rem; }}
 .empty {{ color: var(--muted); font-size: .85rem; padding: .5rem 0; }}
@@ -114,7 +132,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 .src-line .uid {{ opacity: .6; }}
 [data-testid="stExpander"] [data-testid="stMetric"] {{ background: var(--card-2); border: 1px solid var(--border);
   border-radius: .5rem; padding: .45rem .7rem; }}
-[data-testid="stMetricLabel"] p {{ font-family: var(--mono); font-size: .66rem; letter-spacing: .1em;
+[data-testid="stMetricLabel"] p {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .1em;
   text-transform: uppercase; color: var(--muted); }}
 [data-testid="stMetricValue"], [data-testid="stMetricValue"] * {{ font-family: var(--mono); font-size: 1.2rem; font-variant-numeric: tabular-nums; }}
 
@@ -152,11 +170,11 @@ def money_html(value, signed: bool = False) -> str:
     return f'<span class="{cls}">{sign}${abs(value):,.2f}</span>'
 
 
-def stat_card(label: str, value_html: str, sub: str | None = None, tone: str | None = None) -> str:
+def stat_card(label: str, value_html: str, sub: str | None = None, tone: str | None = None, small: bool = False) -> str:
     sub_html = f'<div class="sub">{sub}</div>' if sub else ""
     return (
         f'<div class="card {tone or ""}"><div class="lbl">{label}</div>'
-        f'<div class="val">{value_html}</div>{sub_html}</div>'
+        f'<div class="val{" sm" if small else ""}">{value_html}</div>{sub_html}</div>'
     )
 
 
@@ -168,29 +186,64 @@ def empty_state(msg: str) -> None:
     st.markdown(f'<div class="empty">{msg}</div>', unsafe_allow_html=True)
 
 
+CHART_FONT = "JetBrains Mono, SF Mono, Menlo, monospace"
+CHART_CONFIG = {"displayModeBar": False}  # the hover toolbar sat on top of the legend
+
+
 def style_chart(fig, height: int = 300):
     has_title = bool(fig.layout.title.text)
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="JetBrains Mono, SF Mono, Menlo, monospace", size=11, color=MUTED),
-        margin=dict(l=8, r=8, t=36 if has_title else 8, b=8),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title_text=""),
-        bargap=0.25,
+        font=dict(family=CHART_FONT, size=11, color=MUTED),
+        margin=dict(l=4, r=8, t=34 if has_title else 30, b=4),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1, title_text="",
+                    font=dict(color="#cbd5e1"), itemclick=False, itemdoubleclick=False),
+        hoverlabel=dict(bgcolor="#131d34", bordercolor=BORDER, font=dict(family=CHART_FONT, size=11, color="#e2e8f0")),
+        bargap=0.3,
+        bargroupgap=0.08,
         height=height,
     )
     if has_title:
-        fig.update_layout(title_font=dict(size=12, color="#cbd5e1"))
-    fig.update_xaxes(showgrid=False, linecolor=BORDER, title_text="")
-    fig.update_yaxes(gridcolor=BORDER, zeroline=False, title_font=dict(size=10))
+        fig.update_layout(title=dict(font=dict(size=11, color="#cbd5e1"), x=0, xanchor="left", y=0.98, yanchor="top"))
+    fig.update_traces(marker_cornerradius=4, marker_line_width=0, selector=dict(type="bar"))
+    fig.update_xaxes(showgrid=False, linecolor=BORDER, ticks="", title_text="")
+    fig.update_yaxes(gridcolor="rgba(30,42,68,.6)", zeroline=False, ticks="", title_text="")
     return fig
 
 
-def style_platform_chart(fig, n_bars: int):
-    style_chart(fig, height=max(260, 22 * n_bars + 60))
-    fig.update_yaxes(categoryorder="total ascending", gridcolor="rgba(0,0,0,0)", title_text="", tickfont=dict(size=10))
-    fig.update_xaxes(gridcolor=BORDER, showgrid=True)
+def style_platform_chart(fig, order: list[str], money: bool):
+    style_chart(fig, height=max(240, 24 * len(order) + 50))
+    fig.update_yaxes(categoryorder="array", categoryarray=order[::-1], showgrid=False, tickfont=dict(size=10, color="#cbd5e1"))
+    fig.update_xaxes(gridcolor="rgba(30,42,68,.6)", showgrid=True, tickformat="$~s" if money else "~s", nticks=5)
+    fig.update_layout(showlegend=False, bargap=0.35)
     return fig
+
+
+def fold_platforms(platform_df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
+    """Per-platform count/volume for the charts. Case variants of one name
+    ('Axs'/'AXS') are merged under their most common spelling, and everything
+    past the top `top_n` by volume folds into 'Other'. Chart-only — the
+    underlying platform values are left as they are."""
+    d = platform_df.assign(key=platform_df["platform"].astype(str).str.strip().str.casefold())
+    label = d.groupby("key")["platform"].agg(lambda s: s.astype(str).str.strip().value_counts().index[0])
+    summary = (
+        d.groupby("key")
+        .agg(transaction_count=("id", "count"), total_volume=("total_price", "sum"))
+        .assign(platform=label)
+        .sort_values("total_volume", ascending=False)
+    )
+    if len(summary) > top_n:
+        rest = summary.iloc[top_n:]
+        other = pd.DataFrame(
+            {
+                "transaction_count": [rest["transaction_count"].sum()],
+                "total_volume": [rest["total_volume"].sum()],
+                "platform": [f"Other ({len(rest)})"],
+            }
+        )
+        summary = pd.concat([summary.iloc[:top_n], other])
+    return summary.reset_index(drop=True)
 
 
 MONEY_COL = st.column_config.NumberColumn(format="$%.2f")
@@ -329,6 +382,120 @@ with st.container(border=True, key="zone-overview"):
         )
 
 
+# --- Event lookup --------------------------------------------------------------
+# Mirrors the workbook's "Event Lookup" tab (fed by its Inventory Dashboard),
+# computed from the source='excel' rows: BL (buys) keyed by event name, with
+# SL (sells) summed against it.
+def build_event_lookup(excel_df: pd.DataFrame) -> pd.DataFrame:
+    bl = excel_df[excel_df["transaction_type"] == "buy"].copy()
+    sl = excel_df[excel_df["transaction_type"] == "sell"].copy()
+    if bl.empty:
+        return pd.DataFrame()
+
+    bl["price_per_ticket"] = pd.to_numeric(bl["price_per_ticket"], errors="coerce")
+    events = bl.groupby("artist_or_event").agg(
+        event_date=("event_date", "first"),
+        venue=("venue", "first"),
+        price_per_ticket=("price_per_ticket", "first"),
+        bought=("quantity", "sum"),
+        cost=("total_price", "sum"),
+    )
+
+    # SL "Total Sale After Fees" is Tickets Sold × Sell Price in the
+    # workbook; the DB's total_price is Gross Sale, so rebuild it.
+    sl["price_per_ticket"] = pd.to_numeric(sl["price_per_ticket"], errors="coerce")
+    sl["after_fees"] = (sl["quantity"] * sl["price_per_ticket"]).fillna(sl["total_price"])
+    sl["transferred"] = sl["quantity"].where(sl["transfer_status"] == "transferred", 0)
+    # Excel's SUMIFS matches names case-insensitively ('max styler' counts
+    # toward 'Max Styler'), so join on a casefolded key.
+    sold = sl.groupby(sl["artist_or_event"].str.strip().str.casefold()).agg(
+        sold=("quantity", "sum"), revenue=("after_fees", "sum"), transferred=("transferred", "sum")
+    )
+
+    events["key"] = events.index.str.strip().str.casefold()
+    events = events.join(sold, on="key", how="left").fillna({"sold": 0, "revenue": 0.0, "transferred": 0})
+    events["inv_profit"] = events["revenue"] - events["cost"].fillna(0)
+    events["event_date"] = pd.to_datetime(events["event_date"], errors="coerce")
+    today = pd.Timestamp(datetime.now().date())
+    events["days"] = (events["event_date"] - today).dt.days
+    events["status"] = events.apply(_event_status, axis=1)
+    return events
+
+
+def _event_status(e) -> str:
+    """The BL Status formula, minus its first branch: 'Paid Out' comes from
+    BL's "Paid out?" checkbox, which isn't imported, so fully sold and
+    transferred events read 'Sold and Sent' here."""
+    bought, sold, sent = int(e["bought"] or 0), int(e["sold"]), int(e["transferred"])
+    to_sell, to_send = max(0, bought - sold), max(0, sold - sent)
+    if bought > 0 and bought == sold and sold == sent:
+        return "Sold and Sent"
+    if bought == sold:
+        return f"OOS, Transfer {to_send}"
+    if to_send > 0:
+        return f"Sell {to_sell}, Transfer {to_send}"
+    return f"Sell {to_sell}"
+
+
+def lookup_options(events: pd.DataFrame) -> list[str]:
+    """Upcoming events soonest-first, then past events most-recent-first."""
+    upcoming = events[events["days"] >= 0].sort_values("days")
+    past = events[~(events["days"] >= 0)].sort_values("days", ascending=False, na_position="last")
+    return upcoming.index.tolist() + past.index.tolist()
+
+
+events_lookup = build_event_lookup(excel_df)
+
+with st.container(border=True, key="zone-lookup"):
+    section_header("Event lookup", "02 · lookup", sub="Working sheet only · type to search by event name.")
+    if events_lookup.empty:
+        empty_state("No working-sheet events to look up yet.")
+    else:
+        picked = st.selectbox(
+            "Event",
+            lookup_options(events_lookup),
+            index=None,
+            placeholder=f"Search {len(events_lookup)} events…",
+            label_visibility="collapsed",
+            key="event_lookup",
+        )
+        if picked:
+            e = events_lookup.loc[picked]
+            date_str = e["event_date"].strftime("%a %b %-d, %Y") if pd.notna(e["event_date"]) else "No date"
+            venue = f" · {html.escape(str(e['venue']))}" if e["venue"] else ""
+            st.markdown(
+                f'<div class="ev-head"><span class="name">{html.escape(picked)}</span>'
+                f'<span class="meta">{date_str}{venue}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+            bought, sold = int(e["bought"] or 0), int(e["sold"])
+            if pd.isna(e["days"]):
+                days_val, days_sub = '<span class="na">—</span>', "no event date"
+            elif e["days"] >= 0:
+                days_val, days_sub = f"{int(e['days'])}", "days until event"
+            else:
+                days_val, days_sub = f"−{abs(int(e['days']))}", "days · event passed"
+            status = e["status"]
+            status_tone = "pos" if status == "Sold and Sent" else ("neg" if (e["days"] or 0) < 0 and bought > sold else None)
+            st.markdown(
+                stat_grid(
+                    [
+                        stat_card("$ / ticket", money_html(e["price_per_ticket"])),
+                        stat_card("Sold / total", f"{sold}<span class='na'> / {bought}</span>",
+                                  sub=f"{bought - sold} left" if bought > sold else "all sold"),
+                        stat_card("Status", f'<span class="{status_tone or ""}">{html.escape(status)}</span>', small=True),
+                        stat_card("Days to sell", days_val, sub=days_sub),
+                        stat_card("Inv profit", money_html(e["inv_profit"], signed=True),
+                                  sub=f"{money_html(e['revenue'])} rev − {money_html(e['cost'])} cost",
+                                  tone="pos" if e["inv_profit"] > 0 else "neg" if e["inv_profit"] < 0 else None),
+                    ],
+                    5,
+                ),
+                unsafe_allow_html=True,
+            )
+
+
 def source_line_html(row: dict) -> str | None:
     """Muted 'via … · sent to … · <local time>' line for one contributing row.
     None when the row has no email header fields (Excel-sourced rows)."""
@@ -446,7 +613,7 @@ pending_sell_df = df[(df["source"] == "email") & (~df["promoted"]) & (df["transa
 with st.container(border=True, key="zone-pending"):
     section_header(
         "Pending — not yet in working sheet",
-        "02 · inbox",
+        "03 · inbox",
         count=pending_count,
         sub="Scraped from email, grouped by event / date / tier.",
     )
@@ -461,7 +628,7 @@ with st.container(border=True, key="zone-pending"):
 # --- Needs review --------------------------------------------------------------
 review_df = df[df["needs_review"]]
 with st.container(border=True, key="zone-review"):
-    section_header("Needs review", "03 · flagged", count=len(review_df), tone=WARN)
+    section_header("Needs review", "04 · flagged", count=len(review_df), tone=WARN)
     if review_df.empty:
         empty_state("Nothing flagged for review.")
     else:
@@ -496,7 +663,12 @@ ts_df = ts_df[ts_df["transaction_type"].isin(["buy", "sell"])]
 platform_df = excel_df.dropna(subset=["platform"])
 
 with st.container(border=True, key="zone-charts"):
-    section_header("Spend / revenue over time", "04 · analytics", tone=MUTED)
+    section_header(
+        "Spend / revenue over time",
+        "05 · analytics",
+        tone=MUTED,
+        sub="Working sheet only · buys by purchase date, sales by date sold, per month.",
+    )
     if ts_df.empty:
         st.caption("No dated transactions to chart yet.")
     else:
@@ -506,49 +678,64 @@ with st.container(border=True, key="zone-charts"):
             .sum()
             .reset_index()
         )
+        monthly["series"] = monthly["transaction_type"].map({"buy": "Spent", "sell": "Revenue"})
         fig_ts = px.bar(
             monthly,
             x="month",
             y="total_price",
-            color="transaction_type",
+            color="series",
             barmode="group",
-            labels={"month": "Month", "total_price": "Amount ($)", "transaction_type": "Type"},
-            color_discrete_map={"buy": BUY_COLOR, "sell": SELL_COLOR},
+            category_orders={"series": ["Spent", "Revenue"]},
+            color_discrete_map={"Spent": BUY_COLOR, "Revenue": SELL_COLOR},
         )
-        st.plotly_chart(style_chart(fig_ts), use_container_width=True)
+        fig_ts.update_traces(hovertemplate="%{x|%B %Y}<br>%{fullData.name}: $%{y:,.0f}<extra></extra>")
+        style_chart(fig_ts, height=280)
+        months = sorted(monthly["month"].unique())
+        fig_ts.update_xaxes(
+            tickvals=months,
+            # Year only where it changes, so the axis doesn't repeat it 20 times.
+            ticktext=[
+                m.strftime("%b<br>%Y") if i == 0 or m.month == 1 else m.strftime("%b")
+                for i, m in enumerate(pd.to_datetime(months))
+            ],
+        )
+        fig_ts.update_yaxes(tickformat="$~s", nticks=5)
+        st.plotly_chart(fig_ts, use_container_width=True, config=CHART_CONFIG)
 
-    section_header("Breakdown by platform", "by platform", tone=MUTED)
+    section_header(
+        "Breakdown by platform",
+        "by platform",
+        tone=MUTED,
+        sub="Top 10 by dollar volume; both charts share one order. Case variants (Axs / AXS) are merged.",
+    )
     if platform_df.empty:
         st.caption("No platform data to chart yet.")
     else:
-        platform_summary = (
-            platform_df.groupby("platform")
-            .agg(transaction_count=("id", "count"), total_volume=("total_price", "sum"))
-            .reset_index()
-        )
-        pcol1, pcol2 = st.columns(2, gap="medium")
+        platform_summary = fold_platforms(platform_df)
+        order = platform_summary["platform"].tolist()
+        pcol1, pcol2 = st.columns(2, gap="large")
         with pcol1:
-            fig_count = px.bar(
-                platform_summary,
-                x="transaction_count",
-                y="platform",
-                orientation="h",
-                labels={"platform": "Platform", "transaction_count": "Transactions"},
-                title="Transaction count",
-                color_discrete_sequence=[ACCENT],
-            )
-            st.plotly_chart(style_platform_chart(fig_count, len(platform_summary)), use_container_width=True)
-        with pcol2:
             fig_volume = px.bar(
                 platform_summary,
                 x="total_volume",
                 y="platform",
                 orientation="h",
-                labels={"platform": "Platform", "total_volume": "Volume ($)"},
                 title="Dollar volume",
-                color_discrete_sequence=[SELL_COLOR],
+                color_discrete_sequence=[PLATFORM_COLOR],
             )
-            st.plotly_chart(style_platform_chart(fig_volume, len(platform_summary)), use_container_width=True)
+            fig_volume.update_traces(hovertemplate="%{y}: $%{x:,.0f}<extra></extra>")
+            st.plotly_chart(style_platform_chart(fig_volume, order, money=True), use_container_width=True, config=CHART_CONFIG)
+        with pcol2:
+            fig_count = px.bar(
+                platform_summary,
+                x="transaction_count",
+                y="platform",
+                orientation="h",
+                title="Transactions",
+                color_discrete_sequence=[PLATFORM_COLOR],
+            )
+            fig_count.update_traces(hovertemplate="%{y}: %{x:,} transactions<extra></extra>")
+            st.plotly_chart(style_platform_chart(fig_count, order, money=False), use_container_width=True, config=CHART_CONFIG)
 
 # --- Matched pairs -------------------------------------------------------------
 matches_df = load_matches()
@@ -557,7 +744,7 @@ if not matches_df.empty:
         profit_col = next(
             (c for c in ("net_profit", "profit", "realized_profit") if c in matches_df.columns), None
         )
-        section_header("Matched buy/sell pairs", "05 · realized", count=len(matches_df), tone=MUTED)
+        section_header("Matched buy/sell pairs", "06 · realized", count=len(matches_df), tone=MUTED)
         if profit_col:
             matched_profit = matches_df[profit_col].sum()
             st.markdown(
@@ -599,7 +786,7 @@ platforms = sorted(display_df["platform"].unique().tolist())
 types = sorted(display_df["transaction_type"].unique().tolist())
 
 with st.container(border=True, key="zone-all"):
-    section_header("All transactions", "06 · ledger", count=len(display_df), tone=MUTED)
+    section_header("All transactions", "07 · ledger", count=len(display_df), tone=MUTED)
     fcol1, fcol2 = st.columns(2, gap="small")
     platform_filter = fcol1.multiselect("Filter by platform", platforms, default=platforms)
     type_filter = fcol2.multiselect("Filter by type", types, default=types)
