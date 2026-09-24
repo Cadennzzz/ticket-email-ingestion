@@ -5,7 +5,8 @@ Reads transactions.db (transactions + matches tables, the latter produced
 by match.py) and writes/replaces the BL, SL, and Pending sheets in
 EmailScrape.xlsx. BL/SL cover the canonical (source='excel') dataset;
 Pending is a purely informational list of scraped-but-unpromoted
-(source='email') rows and never feeds Net Profit/ROI. Any other sheet in
+(source='email') rows that don't already have a matching line in the sheet
+(see crosscheck.find_excel_matches), and never feeds Net Profit/ROI. Any other sheet in
 that workbook, and Working tickets copy.xlsm, are left untouched.
 
 Run with:
@@ -19,6 +20,7 @@ import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 
+from crosscheck import find_excel_matches
 from db import get_connection
 
 EXPORT_PATH = Path(__file__).parent / "EmailScrape.xlsx"
@@ -141,15 +143,23 @@ def load_data():
 
         # Purely informational: scraped emails not yet promoted into the
         # canonical dataset. Never feeds matching/profit — see match.py.
-        pending = [
+        unpromoted = [
             dict(r)
             for r in conn.execute(
                 "SELECT * FROM transactions WHERE source = 'email' AND promoted = 0"
             ).fetchall()
         ]
+        excel_rows = [
+            dict(r) for r in conn.execute("SELECT * FROM transactions WHERE source = 'excel'").fetchall()
+        ]
     finally:
         conn.close()
-    return buys, matches, pending
+
+    # Rows already recorded by hand in the sheet aren't pending; the
+    # dashboard lists them separately.
+    recorded = find_excel_matches(unpromoted, excel_rows)
+    pending = [p for p in unpromoted if p["id"] not in recorded]
+    return buys, matches, pending, len(recorded)
 
 
 def write_header(ws, columns) -> None:
@@ -301,7 +311,7 @@ def build_workbook(bl_rows, sl_rows, pending_rows):
 
 
 def main() -> None:
-    buys, matches, pending = load_data()
+    buys, matches, pending, recorded_count = load_data()
     bl_rows = build_bl_rows(buys, matches)
     sl_rows = build_sl_rows(matches)
     pending_rows = build_pending_rows(pending)
@@ -312,6 +322,7 @@ def main() -> None:
     print(f"Rows written to BL:      {len(bl_rows)}")
     print(f"Rows written to SL:      {len(sl_rows)}")
     print(f"Rows written to Pending: {len(pending_rows)}")
+    print(f"Already in Excel (left out of Pending): {recorded_count}")
     print(f"File: {EXPORT_PATH}")
 
 
