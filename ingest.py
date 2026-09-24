@@ -19,6 +19,7 @@ import io
 import os
 import re
 import sys
+from datetime import timezone
 from typing import Optional
 
 import requests
@@ -198,6 +199,39 @@ def try_link_fallback(client: genai.Client, sender: str, subject: str, received_
     return None
 
 
+def email_header_fields(msg) -> dict:
+    """
+    sender / sender_name / recipient / received_date for a message.
+
+    The inbox is a forwarding bin, so `To` is what identifies which of the
+    real accounts received the email. If `To` is empty (BCC), fall back to
+    the first Delivered-To that isn't the bin itself. received_date is ISO
+    8601 in UTC; imap_tools returns 1900-01-01 for unparseable dates, which
+    is stored as NULL.
+    """
+    recipients = [a.strip().lower() for a in msg.to if a and a.strip()]
+    if not recipients:
+        bin_address = (GMAIL_USER or "").lower()
+        delivered = [
+            a.strip().lower()
+            for a in msg.headers.get("delivered-to", ())
+            if a and a.strip().lower() != bin_address
+        ]
+        recipients = delivered[:1]
+
+    received_date = None
+    if msg.date and msg.date.year > 1900:
+        date = msg.date if msg.date.tzinfo else msg.date.replace(tzinfo=timezone.utc)
+        received_date = date.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+    return {
+        "sender": (msg.from_ or "").strip().lower() or None,
+        "sender_name": (msg.from_values.name.strip() or None) if msg.from_values else None,
+        "recipient": ", ".join(recipients) or None,
+        "received_date": received_date,
+    }
+
+
 def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     """
     Extract one allowlisted, not-yet-processed message. Returns the row to
@@ -251,6 +285,7 @@ def process_message(client: genai.Client, msg, stats: dict) -> Optional[dict]:
     # (source='excel') dataset until explicitly promoted —
     # matching/export/dashboard metrics never see these.
     data["source"] = "email"
+    data.update(email_header_fields(msg))
     return data
 
 

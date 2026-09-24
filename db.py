@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     raw_email_uid TEXT UNIQUE NOT NULL,
     processed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     source TEXT NOT NULL DEFAULT 'email',
-    promoted BOOLEAN NOT NULL DEFAULT 0
+    promoted BOOLEAN NOT NULL DEFAULT 0,
+    sender TEXT,
+    sender_name TEXT,
+    recipient TEXT,
+    received_date TEXT
 );
 """
 
@@ -50,6 +54,10 @@ _MIGRATIONS = [
     ("source", "TEXT NOT NULL DEFAULT 'email'"),
     ("promoted", "BOOLEAN NOT NULL DEFAULT 0"),
     ("payout_amount", "REAL"),
+    ("sender", "TEXT"),
+    ("sender_name", "TEXT"),
+    ("recipient", "TEXT"),
+    ("received_date", "TEXT"),
 ]
 
 COLUMNS = [
@@ -78,6 +86,10 @@ COLUMNS = [
     "review_reason",
     "raw_email_uid",
     "source",
+    "sender",
+    "sender_name",
+    "recipient",
+    "received_date",
 ]
 
 
