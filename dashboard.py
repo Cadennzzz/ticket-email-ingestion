@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime
 
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from crosscheck import find_excel_matches
@@ -33,12 +33,22 @@ POS = "#22c55e"
 NEG = "#ef4444"
 MUTED = "#8b9ab5"
 BORDER = "#1e2a44"
-# Chart marks sit one step darker than the UI accent so they land in the
-# dark-surface lightness band; checked with the dataviz palette validator
-# (CVD, contrast, chroma) against the zone surface #0f1729.
-BUY_COLOR = "#0d9488"
-SELL_COLOR = "#6366f1"
-PLATFORM_COLOR = "#0284c7"  # its own hue: platforms are neither buys nor sells
+# Chart tokens: every chart color, size and spacing lives here, nowhere
+# else. Colors were checked with the dataviz palette validator against the
+# zone surface (lightness band, chroma, CVD incl. GOOD vs BAD, contrast).
+CHART_SURFACE = "#0f1729"
+SPEND_COLOR = "#dc6a50"  # coral: money out (never green)
+REVENUE_COLOR = "#12a594"  # teal: money in
+GOOD_COLOR = "#10a37f"
+BAD_COLOR = "#dc2626"
+NEUTRAL_COLOR = "#64748b"  # diverging midpoint: gray, not a hue
+NO_SIGNAL_COLOR = "#334155"  # "Other", and categories with too few positions to judge
+INK_MARK_COLOR = "#cbd5e1"  # cumulative line and avg dots: ink, not a series hue
+GRID_COLOR = "rgba(148,163,184,.10)"
+TYPE_TITLE, TYPE_LABEL, TYPE_AXIS = 13, 11, 10  # the only three chart text sizes
+BAR_RADIUS = 4
+BAR_GAP = 0.45
+MIN_POSITIONS = 5  # below this, P&L / fee-rate color is noise, so it's grayed out
 
 st.markdown(
     f"""
@@ -197,55 +207,106 @@ def style_chart(fig, height: int = 300):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=CHART_FONT, size=11, color=MUTED),
-        margin=dict(l=4, r=8, t=34 if has_title else 30, b=4),
+        font=dict(family=CHART_FONT, size=TYPE_LABEL, color=MUTED),
+        margin=dict(l=4, r=8, t=40 if has_title else 30, b=4),
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1, title_text="",
-                    font=dict(color="#cbd5e1"), itemclick=False, itemdoubleclick=False),
-        hoverlabel=dict(bgcolor="#131d34", bordercolor=BORDER, font=dict(family=CHART_FONT, size=11, color="#e2e8f0")),
-        bargap=0.3,
-        bargroupgap=0.08,
+                    font=dict(size=TYPE_LABEL, color="#cbd5e1"), itemclick=False, itemdoubleclick=False),
+        hoverlabel=dict(bgcolor="#131d34", bordercolor=BORDER, font=dict(family=CHART_FONT, size=TYPE_LABEL, color="#e2e8f0")),
+        bargap=BAR_GAP,
         height=height,
     )
     if has_title:
-        fig.update_layout(title=dict(font=dict(size=11, color="#cbd5e1"), x=0, xanchor="left", y=0.98, yanchor="top"))
-    fig.update_traces(marker_cornerradius=4, marker_line_width=0, selector=dict(type="bar"))
-    fig.update_xaxes(showgrid=False, linecolor=BORDER, ticks="", title_text="")
-    fig.update_yaxes(gridcolor="rgba(30,42,68,.6)", zeroline=False, ticks="", title_text="")
+        fig.update_layout(title=dict(font=dict(size=TYPE_TITLE, color="#cbd5e1"), x=0, xanchor="left", y=0.98, yanchor="top"))
+    fig.update_traces(marker_cornerradius=BAR_RADIUS, marker_line_width=0, selector=dict(type="bar"))
+    axis = dict(showline=False, ticks="", title_text="", tickfont=dict(size=TYPE_AXIS), gridcolor=GRID_COLOR,
+                zeroline=False, title_font=dict(size=TYPE_LABEL, color=MUTED))
+    fig.update_xaxes(showgrid=False, **axis)
+    fig.update_yaxes(showgrid=True, **axis)
     return fig
 
 
-def style_platform_chart(fig, order: list[str], money: bool):
-    style_chart(fig, height=max(240, 24 * len(order) + 50))
-    fig.update_yaxes(categoryorder="array", categoryarray=order[::-1], showgrid=False, tickfont=dict(size=10, color="#cbd5e1"))
-    fig.update_xaxes(gridcolor="rgba(30,42,68,.6)", showgrid=True, tickformat="$~s" if money else "~s", nticks=5)
-    fig.update_layout(showlegend=False, bargap=0.35)
-    return fig
+def month_ticktext(months) -> list[str]:
+    """One row per tick; the year only on January (and the first tick, so
+    the axis never starts without one)."""
+    return [m.strftime("%b %Y") if i == 0 or m.month == 1 else m.strftime("%b") for i, m in enumerate(months)]
 
 
-def fold_platforms(platform_df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
-    """Per-platform count/volume for the charts. Case variants of one name
-    ('Axs'/'AXS') are merged under their most common spelling, and everything
-    past the top `top_n` by volume folds into 'Other'. Chart-only — the
-    underlying platform values are left as they are."""
-    d = platform_df.assign(key=platform_df["platform"].astype(str).str.strip().str.casefold())
-    label = d.groupby("key")["platform"].agg(lambda s: s.astype(str).str.strip().value_counts().index[0])
+def zero_aligned_ranges(*extents, pad: float = 1.25) -> list[list[float]]:
+    """Ranges for several y-axes that put zero at the same height, so a line
+    on a secondary axis can't seem to cross the bars' baseline where it
+    doesn't. Picks the shared zero position that wastes the least space."""
+    ext = [(min(lo, 0), max(hi, 0)) for lo, hi in extents]
+
+    def spans(f):
+        return [max(-lo / f, hi / (1 - f)) for lo, hi in ext]
+
+    f = min((i / 100 for i in range(5, 96)),
+            key=lambda f: sum(s / ((hi - lo) or 1) for s, (lo, hi) in zip(spans(f), ext)))
+    return [[-f * s * pad, (1 - f) * s * pad] for s in spans(f)]
+
+
+def fold_platforms(frame: pd.DataFrame, volume: pd.Series, top_n: int = 6, fold=frozenset()) -> pd.DataFrame:
+    """Per-platform count/volume for the platform charts, indexed by a
+    casefolded key. Case variants ('Axs'/'AXS') merge under their most common
+    spelling, a missing platform is 'Unspecified', and keys in `fold` plus
+    everything past the top `top_n` by volume fold into 'Other', pinned
+    last. Chart-only; the underlying platform values are left as they are."""
+    d = frame.assign(platform=frame["platform"].fillna("Unspecified").astype(str).str.strip(), volume=volume)
+    d["key"] = d["platform"].str.casefold()
+    label = d.groupby("key")["platform"].agg(lambda s: s.value_counts().index[0])
     summary = (
-        d.groupby("key")
-        .agg(transaction_count=("id", "count"), total_volume=("total_price", "sum"))
-        .assign(platform=label)
-        .sort_values("total_volume", ascending=False)
+        d.groupby("key").agg(count=("id", "count"), volume=("volume", "sum"))
+        .assign(platform=label, is_other=False)
+        .sort_values("volume", ascending=False)
     )
-    if len(summary) > top_n:
-        rest = summary.iloc[top_n:]
+    named = summary[~summary.index.isin(fold)]
+    rest = pd.concat([named.iloc[top_n:], summary[summary.index.isin(fold)]])
+    summary = named.iloc[:top_n]
+    if len(rest):
         other = pd.DataFrame(
-            {
-                "transaction_count": [rest["transaction_count"].sum()],
-                "total_volume": [rest["total_volume"].sum()],
-                "platform": [f"Other ({len(rest)})"],
-            }
+            {"count": [rest["count"].sum()], "volume": [rest["volume"].sum()],
+             "platform": [f"Other ({len(rest)})"], "is_other": [True]},
+            index=["__other__"],
         )
-        summary = pd.concat([summary.iloc[:top_n], other])
-    return summary.reset_index(drop=True)
+        summary = pd.concat([summary, other])
+    return summary.assign(avg=summary["volume"] / summary["count"])
+
+
+def platform_chart(summary: pd.DataFrame, title: str, bins: list[tuple[str, str, str]]):
+    """Horizontal bars = dollar volume, colored by `summary['bin']` (one legend
+    entry per bin in `bins`: (bin, legend label, color)); a dot on a top axis
+    = average $ per transaction. Expects columns platform, tick, volume,
+    count, avg, bin, detail; rows already in display order."""
+    fig = go.Figure()
+    for b, name, color in bins:
+        part = summary[summary["bin"] == b]
+        if part.empty:
+            continue
+        fig.add_bar(
+            x=part["volume"], y=part["tick"], orientation="h", name=name, marker_color=color,
+            customdata=part[["platform", "count", "detail"]],
+            hovertemplate="<b>%{customdata[0]}</b><br>$%{x:,.0f} volume · %{customdata[1]:,} transactions"
+            "<br>%{customdata[2]}<extra></extra>",
+        )
+    fig.add_scatter(
+        x=summary["avg"], y=summary["tick"], xaxis="x2", mode="markers", name="Avg $ / transaction",
+        marker=dict(size=8, color=INK_MARK_COLOR, line=dict(width=2, color=CHART_SURFACE)),
+        customdata=summary[["platform"]], hovertemplate="<b>%{customdata[0]}</b><br>avg $%{x:,.0f} per transaction<extra></extra>",
+    )
+    fig.update_layout(title_text=title, barmode="relative")
+    style_chart(fig, height=34 * len(summary) + 150)
+    fig.update_layout(
+        margin=dict(t=74, b=40),  # bottom room for the legend under the axis title
+        legend=dict(orientation="h", yref="container", y=0, yanchor="bottom", x=0, xanchor="left"),
+        xaxis2=dict(overlaying="x", side="top", rangemode="tozero", tickformat="$~s", nticks=4, showgrid=False,
+                    showline=False, ticks="", tickfont=dict(size=TYPE_AXIS),
+                    title=dict(text="Avg $ per transaction (dot)", font=dict(size=TYPE_LABEL, color=MUTED))),
+    )
+    fig.update_layout(xaxis=dict(showgrid=True, rangemode="tozero", tickformat="$~s", nticks=5,
+                                 title_text="Dollar volume, USD (bar)"))
+    fig.update_yaxes(showgrid=False, categoryorder="array", categoryarray=summary["tick"].tolist()[::-1],
+                     tickfont=dict(size=TYPE_AXIS, color="#cbd5e1"))
+    return fig
 
 
 MONEY_COL = st.column_config.NumberColumn(format="$%.2f")
@@ -801,85 +862,176 @@ ts_df["purchase_date"] = pd.to_datetime(ts_df["purchase_date"], errors="coerce")
 ts_df = ts_df.dropna(subset=["purchase_date"])
 ts_df = ts_df[ts_df["transaction_type"].isin(["buy", "sell"])]
 
-platform_df = excel_df.dropna(subset=["platform"])
+matches_df = load_matches()
 
 with st.container(border=True, key="zone-charts"):
     section_header(
         "Spend / revenue over time",
         "05 · analytics",
         tone=MUTED,
-        sub="Working sheet only · buys by purchase date, sales by date sold, per month.",
+        sub="Working sheet only · buys by purchase date, sales (after fees) by date sold, per month. "
+        "Months with no activity are skipped.",
     )
     if ts_df.empty:
         st.caption("No dated transactions to chart yet.")
     else:
+        window = st.segmented_control(
+            "Window", ["Last 13 months", "All time"], default="Last 13 months",
+            key="ts_window", label_visibility="collapsed",
+        )
         ts_df["month"] = ts_df["purchase_date"].dt.to_period("M").dt.to_timestamp()
+        ts_df["amount"] = ts_df["total_price"].where(ts_df["transaction_type"] == "buy", after_fees(ts_df))
         monthly = (
-            ts_df.groupby(["month", "transaction_type"])["total_price"]
-            .sum()
-            .reset_index()
+            ts_df.pivot_table(index="month", columns="transaction_type", values="amount", aggfunc="sum", fill_value=0)
+            .reindex(columns=["buy", "sell"], fill_value=0)
         )
-        monthly["series"] = monthly["transaction_type"].map({"buy": "Spent", "sell": "Revenue"})
-        fig_ts = px.bar(
-            monthly,
-            x="month",
-            y="total_price",
-            color="series",
-            barmode="group",
-            category_orders={"series": ["Spent", "Revenue"]},
-            color_discrete_map={"Spent": BUY_COLOR, "Revenue": SELL_COLOR},
+        # Running cash position over all history, so the 13-month view picks
+        # up where earlier months left it rather than restarting at zero.
+        monthly["cum_net"] = (monthly["sell"] - monthly["buy"]).cumsum()
+        if window != "All time":
+            cutoff = (pd.Timestamp.today().to_period("M") - 12).to_timestamp()
+            monthly = monthly[monthly.index >= cutoff]
+
+        x = monthly.index.strftime("%Y-%m").tolist()
+        full_month = monthly.index.strftime("%B %Y")
+        fig_ts = go.Figure()
+        fig_ts.add_bar(
+            x=x, y=-monthly["buy"], name="Spent", marker_color=SPEND_COLOR,
+            customdata=list(zip(full_month, monthly["buy"])),
+            hovertemplate="<b>%{customdata[0]}</b><br>Spent $%{customdata[1]:,.0f}<extra></extra>",
         )
-        fig_ts.update_traces(hovertemplate="%{x|%B %Y}<br>%{fullData.name}: $%{y:,.0f}<extra></extra>")
-        style_chart(fig_ts, height=280)
-        months = sorted(monthly["month"].unique())
-        fig_ts.update_xaxes(
-            tickvals=months,
-            # Year only where it changes, so the axis doesn't repeat it 20 times.
-            ticktext=[
-                m.strftime("%b<br>%Y") if i == 0 or m.month == 1 else m.strftime("%b")
-                for i, m in enumerate(pd.to_datetime(months))
-            ],
+        fig_ts.add_bar(
+            x=x, y=monthly["sell"], name="Revenue", marker_color=REVENUE_COLOR,
+            customdata=full_month,
+            hovertemplate="<b>%{customdata}</b><br>Revenue $%{y:,.0f}<extra></extra>",
         )
-        fig_ts.update_yaxes(tickformat="$~s", nticks=5)
+        fig_ts.add_scatter(
+            x=x, y=monthly["cum_net"], yaxis="y2", name="Cumulative net", mode="lines",
+            line=dict(color=INK_MARK_COLOR, width=1.5), opacity=0.5,
+            customdata=full_month,
+            hovertemplate="<b>%{customdata}</b><br>Cumulative net %{y:$,.0f}<extra></extra>",
+        )
+        # Direct labels on the two extremes only; the tooltip carries the rest.
+        for series, sign, anchor in (("buy", -1, "top"), ("sell", 1, "bottom")):
+            if monthly[series].max() > 0:
+                peak = monthly[series].idxmax()
+                fig_ts.add_annotation(
+                    x=peak.strftime("%Y-%m"), y=sign * monthly.at[peak, series], text=f"${monthly.at[peak, series]:,.0f}",
+                    showarrow=False, yanchor=anchor, yshift=sign * 3, font=dict(size=TYPE_LABEL, color="#cbd5e1"),
+                )
+        fig_ts.update_layout(barmode="relative")
+        style_chart(fig_ts, height=320)
+        bars_range, line_range = zero_aligned_ranges(
+            (-monthly["buy"].max(), monthly["sell"].max()), (monthly["cum_net"].min(), monthly["cum_net"].max())
+        )
+        fig_ts.update_layout(
+            margin_r=4,
+            yaxis=dict(range=bars_range, tickformat="$~s", nticks=6, zeroline=True, zerolinecolor=GRID_COLOR,
+                       title_text="Spent (−) / revenue (+)"),
+            yaxis2=dict(overlaying="y", side="right", range=line_range, tickformat="$~s", nticks=6, showgrid=False,
+                        showline=False, ticks="", tickfont=dict(size=TYPE_AXIS),
+                        title=dict(text="Cumulative net (line)", font=dict(size=TYPE_LABEL, color=MUTED))),
+        )
+        fig_ts.update_xaxes(type="category", tickvals=x, ticktext=month_ticktext(monthly.index), tickangle=0)
         st.plotly_chart(fig_ts, use_container_width=True, config=CHART_CONFIG)
 
     section_header(
-        "Breakdown by platform",
+        "Purchase accounts · sale marketplaces",
         "by platform",
         tone=MUTED,
-        sub="Top 10 by dollar volume; both charts share one order. Case variants (Axs / AXS) are merged.",
+        sub="Bar = dollar volume, dot = average $ per transaction. Case variants (Axs / AXS) are merged; "
+        f"categories with fewer than {MIN_POSITIONS} closed positions are grayed out.",
     )
-    if platform_df.empty:
-        st.caption("No platform data to chart yet.")
-    else:
-        platform_summary = fold_platforms(platform_df)
-        order = platform_summary["platform"].tolist()
-        pcol1, pcol2 = st.columns(2, gap="large")
-        with pcol1:
-            fig_volume = px.bar(
-                platform_summary,
-                x="total_volume",
-                y="platform",
-                orientation="h",
-                title="Dollar volume",
-                color_discrete_sequence=[PLATFORM_COLOR],
+    pcol1, pcol2 = st.columns(2, gap="large")
+
+    with pcol1:
+        # 'Ethan', 'Cash App Ethan', 'Paciolan Ethan (…)' are funding sources, not accounts.
+        funded = buys["platform"].fillna("").str.contains("ethan", case=False)
+        acct_buys = buys[~funded]
+        if acct_buys.empty:
+            st.caption("No purchase data to chart yet.")
+        else:
+            accounts = fold_platforms(acct_buys, acct_buys["total_price"], fold={"other"})
+            if not matches_df.empty:
+                m = matches_df.merge(
+                    acct_buys[["id", "platform"]].rename(columns={"id": "buy_id"}), on="buy_id"
+                )
+                m["key"] = m["platform"].fillna("Unspecified").astype(str).str.strip().str.casefold()
+                pnl = m.groupby("key").agg(pairs=("id", "count"), pnl=("net_profit", "sum"), cost=("purchase_cost", "sum"))
+                accounts = accounts.join(pnl)
+            else:
+                accounts = accounts.assign(pairs=0, pnl=0.0, cost=0.0)
+            accounts["pairs"] = accounts["pairs"].fillna(0).astype(int)
+            accounts["roi"] = accounts["pnl"] / accounts["cost"]
+
+            def _acct_bin(r):
+                if r["is_other"] or r["pairs"] < MIN_POSITIONS or pd.isna(r["roi"]):
+                    return "none"
+                return "good" if r["roi"] > 0.05 else "bad" if r["roi"] < -0.05 else "flat"
+
+            accounts["bin"] = accounts.apply(_acct_bin, axis=1)
+            accounts["tick"] = [
+                r["platform"] if r["is_other"] or r["bin"] == "none" else f"{r['platform']} {r['roi']:+.0%}"
+                for _, r in accounts.iterrows()
+            ]
+            accounts["detail"] = [
+                "" if r["is_other"] else
+                f"{r['pairs']} matched pairs" + ("" if r["pairs"] == 0 else f" · P&L {'−' if r['pnl'] < 0 else '+'}${abs(r['pnl']):,.0f} ({r['roi']:+.0%} ROI)")
+                for _, r in accounts.iterrows()
+            ]
+            st.plotly_chart(
+                platform_chart(accounts, "Purchase accounts · capital deployed", [
+                    ("good", "ROI > +5%", GOOD_COLOR), ("flat", "within ±5%", NEUTRAL_COLOR),
+                    ("bad", "ROI < −5%", BAD_COLOR), ("none", f"Other / < {MIN_POSITIONS} pairs", NO_SIGNAL_COLOR),
+                ]),
+                use_container_width=True, config=CHART_CONFIG,
             )
-            fig_volume.update_traces(hovertemplate="%{y}: $%{x:,.0f}<extra></extra>")
-            st.plotly_chart(style_platform_chart(fig_volume, order, money=True), use_container_width=True, config=CHART_CONFIG)
-        with pcol2:
-            fig_count = px.bar(
-                platform_summary,
-                x="transaction_count",
-                y="platform",
-                orientation="h",
-                title="Transactions",
-                color_discrete_sequence=[PLATFORM_COLOR],
+            st.caption(
+                f"P&L from matched pairs, by the account the tickets were bought on. Excludes funding sources "
+                f"(Ethan, Cash App Ethan, Paciolan Ethan): ${buys.loc[funded, 'total_price'].sum():,.0f}."
             )
-            fig_count.update_traces(hovertemplate="%{y}: %{x:,} transactions<extra></extra>")
-            st.plotly_chart(style_platform_chart(fig_count, order, money=False), use_container_width=True, config=CHART_CONFIG)
+
+    with pcol2:
+        # Loss and Refund rows are write-offs, not sales; Groupme / Zelle are payment channels.
+        is_sale = ~sells["platform"].fillna("").str.strip().str.casefold().isin({"loss", "refund"})
+        sale_rows = sells[is_sale]
+        if sale_rows.empty:
+            st.caption("No sale data to chart yet.")
+        else:
+            markets = fold_platforms(sale_rows, sale_rows["total_price"], fold={"groupme", "zelle"})
+            payout = after_fees(sale_rows).groupby(
+                sale_rows["platform"].fillna("Unspecified").astype(str).str.strip().str.casefold()
+            ).sum()
+            markets["payout"] = payout
+            markets["fee"] = (markets["volume"] - markets["payout"]) / markets["volume"]
+
+            def _fee_bin(r):
+                if r["is_other"] or r["count"] < MIN_POSITIONS or pd.isna(r["fee"]):
+                    return "none"
+                return "good" if r["fee"] <= 0.03 else "bad" if r["fee"] > 0.10 else "flat"
+
+            markets["bin"] = markets.apply(_fee_bin, axis=1)
+            markets["tick"] = [
+                r["platform"] if r["is_other"] or r["bin"] == "none" else f"{r['platform']} {r['fee']:.0%}"
+                for _, r in markets.iterrows()
+            ]
+            markets["detail"] = [
+                "" if r["is_other"] else f"fee {r['fee']:.1%} · payout ${r['payout']:,.0f}"
+                for _, r in markets.iterrows()
+            ]
+            st.plotly_chart(
+                platform_chart(markets, "Sale marketplaces · revenue in", [
+                    ("good", "fee ≤ 3%", GOOD_COLOR), ("flat", "fee 3–10%", NEUTRAL_COLOR),
+                    ("bad", "fee > 10%", BAD_COLOR), ("none", f"Other / < {MIN_POSITIONS} sales", NO_SIGNAL_COLOR),
+                ]),
+                use_container_width=True, config=CHART_CONFIG,
+            )
+            st.caption(
+                "Bar = gross sales; fee rate = (gross − payout) / gross. Excludes Loss and Refund rows. "
+                "StubHub's gross in the sheet is mostly payout × 1.15, so its rate reflects that formula."
+            )
 
 # --- Matched pairs -------------------------------------------------------------
-matches_df = load_matches()
 if not matches_df.empty:
     with st.container(border=True, key="zone-matches"):
         profit_col = next(
