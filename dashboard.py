@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import sqlite3
+from datetime import datetime
 
 import pandas as pd
 import plotly.express as px
@@ -108,6 +109,9 @@ footer, #MainMenu {{ visibility: hidden; }}
 [data-testid="stExpander"] summary {{ padding-top: .45rem; padding-bottom: .45rem; font-size: .9rem; }}
 [class*="st-key-flag-"] [data-testid="stExpander"] details {{ border-left: 3px solid var(--warn); }}
 [class*="st-key-flag-"] [data-testid="stExpander"] summary p {{ color: #fde68a; }}
+.src-lines {{ margin-top: .15rem; }}
+.src-line {{ color: var(--muted); font-family: var(--mono); font-size: .7rem; line-height: 1.55; opacity: .85; }}
+.src-line .uid {{ opacity: .6; }}
 [data-testid="stExpander"] [data-testid="stMetric"] {{ background: var(--card-2); border: 1px solid var(--border);
   border-radius: .5rem; padding: .45rem .7rem; }}
 [data-testid="stMetricLabel"] p {{ font-family: var(--mono); font-size: .66rem; letter-spacing: .1em;
@@ -325,6 +329,28 @@ with st.container(border=True, key="zone-overview"):
         )
 
 
+def source_line_html(row: dict) -> str | None:
+    """Muted 'via … · sent to … · <local time>' line for one contributing row.
+    None when the row has no email header fields (Excel-sourced rows)."""
+    sender_name, recipient, received = row.get("sender_name"), row.get("recipient"), row.get("received_date")
+    if not (sender_name or recipient or received):
+        return None
+
+    parts = []
+    via = sender_name or row.get("platform")
+    if via:
+        parts.append(f"via {html.escape(str(via))}")
+    if recipient:
+        parts.append(f"sent to {html.escape(str(recipient))}")
+    if received:
+        # Stored as UTC ISO 8601; shown in the machine's local time.
+        local = pd.Timestamp(received).tz_convert(datetime.now().astimezone().tzinfo)
+        parts.append(local.strftime("%b %-d, %-I:%M %p"))
+
+    uid = html.escape(str(row.get("raw_email_uid") or ""))
+    return f'<div class="src-line"><span class="uid">uid {uid} ·</span> {" · ".join(parts)}</div>'
+
+
 def render_pending_section(pending_df: pd.DataFrame, existing_names: set, key_prefix: str) -> None:
     """Render one grouped, expander-per-group 'Pending ...' section.
     Mutates `existing_names` in place so a purchases section and a sales
@@ -405,6 +431,10 @@ def render_pending_section(pending_df: pd.DataFrame, existing_names: set, key_pr
                     "needs_review": st.column_config.CheckboxColumn("review"),
                 },
             )
+
+            src_lines = [line for line in map(source_line_html, g["rows"]) if line]
+            if src_lines:
+                st.markdown(f'<div class="src-lines">{"".join(src_lines)}</div>', unsafe_allow_html=True)
 
 
 pending_existing_names = set(load_existing_event_names())
