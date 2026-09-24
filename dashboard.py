@@ -20,6 +20,7 @@ import streamlit as st
 from crosscheck import find_excel_matches
 from db import DB_PATH
 from grouping import group_pending_rows, read_existing_event_names, suggest_event_name
+from manual_marks import load_marks, mark, unmark
 
 st.set_page_config(page_title="Ticket Transactions", page_icon="🎟️", layout="wide")
 
@@ -319,11 +320,17 @@ def _records(frame: pd.DataFrame) -> list:
 
 
 # Scraped rows that already have a matching line in the sheet were handled
-# by hand; they're listed separately instead of as needing action.
+# by hand; they're listed separately instead of as needing action. Rows the
+# user marked as recorded (manual_marks.csv, for sheet entries the matcher
+# can't link) leave Pending the same way, but are listed on their own.
 unpromoted_df = df[(df["source"] == "email") & (~df["promoted"])]
 excel_match = find_excel_matches(_records(unpromoted_df), _records(excel_df))
-recorded_df = unpromoted_df[unpromoted_df["id"].isin(excel_match)]
-pending_df = unpromoted_df[~unpromoted_df["id"].isin(excel_match)]
+manual_marks = load_marks()
+auto_matched = unpromoted_df["id"].isin(excel_match)
+manually_marked = ~auto_matched & unpromoted_df["raw_email_uid"].astype(str).isin(manual_marks)
+recorded_df = unpromoted_df[auto_matched]
+manual_df = unpromoted_df[manually_marked]
+pending_df = unpromoted_df[~auto_matched & ~manually_marked]
 pending_count = len(pending_df)
 
 buys = excel_df[excel_df["transaction_type"] == "buy"]
@@ -616,6 +623,16 @@ def render_pending_section(pending_df: pd.DataFrame, existing_names: set, key_pr
             if src_lines:
                 st.markdown(f'<div class="src-lines">{"".join(src_lines)}</div>', unsafe_allow_html=True)
 
+            uids = [str(u) for u in g["contributing_uids"]]
+            if st.button(
+                "Mark as recorded",
+                key=f"mark-{key_prefix}-{'-'.join(uids)}",
+                help="Use after entering this group in the working sheet under a name the "
+                "auto-match can't link. Moves it out of Pending; nothing in the database changes.",
+            ):
+                mark(uids, note=label)
+                st.rerun()
+
 
 pending_existing_names = set(load_existing_event_names())
 
@@ -623,11 +640,20 @@ pending_buy_df = pending_df[pending_df["transaction_type"] == "buy"]
 pending_sell_df = pending_df[pending_df["transaction_type"] == "sell"]
 
 
-def render_recorded_section(recorded_df: pd.DataFrame) -> None:
-    """Collapsed list of scraped rows that already have a line in the sheet,
-    each beside the Excel row that records it (crosscheck.find_excel_matches)."""
-    if recorded_df.empty:
+def render_recorded_section(recorded_df: pd.DataFrame, manual_df: pd.DataFrame) -> None:
+    """Collapsed lists of scraped rows that already have a line in the sheet:
+    auto-matched ones beside the Excel row that records them
+    (crosscheck.find_excel_matches), and ones the user marked by hand."""
+    if recorded_df.empty and manual_df.empty:
         return
+    st.markdown('<div class="group-lbl">Both tabs · handled by hand</div>', unsafe_allow_html=True)
+    if not recorded_df.empty:
+        render_auto_recorded(recorded_df)
+    if not manual_df.empty:
+        render_manually_marked(manual_df)
+
+
+def render_auto_recorded(recorded_df: pd.DataFrame) -> None:
     excel_by_id = excel_df.set_index("id")
     table = recorded_df.assign(excel_id=recorded_df["id"].map(excel_match))
     table = table.assign(
@@ -635,7 +661,6 @@ def render_recorded_section(recorded_df: pd.DataFrame) -> None:
         excel_quantity=table["excel_id"].map(excel_by_id["quantity"]),
         excel_total=table["excel_id"].map(excel_by_id["total_price"]),
     ).sort_values(["excel_id", "id"])
-    st.markdown('<div class="group-lbl">Both tabs · handled by hand</div>', unsafe_allow_html=True)
     with st.expander(f"Already recorded in Excel ({len(recorded_df)})"):
         st.caption(
             "Same type and event date, a shared event word, and quantity/total within $1 of an "
@@ -667,6 +692,46 @@ def render_recorded_section(recorded_df: pd.DataFrame) -> None:
             },
         )
 
+def render_manually_marked(manual_df: pd.DataFrame) -> None:
+    table = manual_df.assign(
+        uid=manual_df["raw_email_uid"].astype(str),
+        marked_at=manual_df["raw_email_uid"].astype(str).map(lambda u: manual_marks[u]["marked_at"]),
+    ).sort_values(["transaction_type", "event_date", "id"])
+    with st.expander(f"Manually marked ({len(manual_df)})"):
+        st.caption(
+            "Marked as recorded from the Pending list — entered in the sheet under a name or "
+            "structure the auto-match couldn't link. Stored in manual_marks.csv; commit it so "
+            "the pipeline's Pending sheet leaves these out too."
+        )
+        st.dataframe(
+            table[
+                [
+                    "artist_or_event",
+                    "transaction_type",
+                    "platform",
+                    "event_date",
+                    "quantity",
+                    "total_price",
+                    "uid",
+                    "marked_at",
+                ]
+            ].rename(columns={"artist_or_event": "event", "transaction_type": "type", "marked_at": "marked"}),
+            width="stretch",
+            hide_index=True,
+            column_config={"total_price": MONEY_COL},
+        )
+        labels = {
+            r["uid"]: f"uid {r['uid']} · {r['artist_or_event']} · {r['transaction_type']} · qty {r['quantity']:g}"
+            for r in table.to_dict("records")
+        }
+        chosen = st.multiselect(
+            "Unmark (send back to Pending)", list(labels), format_func=labels.get, key="unmark-pick"
+        )
+        if st.button("Unmark selected", key="unmark-go", disabled=not chosen):
+            unmark(chosen)
+            st.rerun()
+
+
 # --- Pending -------------------------------------------------------------------
 with st.container(border=True, key="zone-pending"):
     section_header(
@@ -682,7 +747,7 @@ with st.container(border=True, key="zone-pending"):
         render_pending_section(pending_buy_df, pending_existing_names, "buy")
     with tab_sell:
         render_pending_section(pending_sell_df, pending_existing_names, "sell")
-    render_recorded_section(recorded_df)
+    render_recorded_section(recorded_df, manual_df)
 
 # --- Needs review --------------------------------------------------------------
 review_df = df[df["needs_review"]]

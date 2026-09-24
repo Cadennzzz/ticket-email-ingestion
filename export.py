@@ -21,6 +21,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font
 
 from crosscheck import find_excel_matches
+from manual_marks import load_marks
 from db import get_connection
 
 EXPORT_PATH = Path(__file__).parent / "EmailScrape.xlsx"
@@ -156,10 +157,15 @@ def load_data():
         conn.close()
 
     # Rows already recorded by hand in the sheet aren't pending; the
-    # dashboard lists them separately.
+    # dashboard lists them separately. So are rows the user marked as
+    # recorded from the dashboard (manual_marks.csv).
     recorded = find_excel_matches(unpromoted, excel_rows)
-    pending = [p for p in unpromoted if p["id"] not in recorded]
-    return buys, matches, pending, len(recorded)
+    marked = load_marks()
+    pending = [
+        p for p in unpromoted if p["id"] not in recorded and str(p["raw_email_uid"]) not in marked
+    ]
+    manual_count = len(unpromoted) - len(recorded) - len(pending)
+    return buys, matches, pending, len(recorded), manual_count
 
 
 def write_header(ws, columns) -> None:
@@ -311,7 +317,7 @@ def build_workbook(bl_rows, sl_rows, pending_rows):
 
 
 def main() -> None:
-    buys, matches, pending, recorded_count = load_data()
+    buys, matches, pending, recorded_count, manual_count = load_data()
     bl_rows = build_bl_rows(buys, matches)
     sl_rows = build_sl_rows(matches)
     pending_rows = build_pending_rows(pending)
@@ -323,6 +329,7 @@ def main() -> None:
     print(f"Rows written to SL:      {len(sl_rows)}")
     print(f"Rows written to Pending: {len(pending_rows)}")
     print(f"Already in Excel (left out of Pending): {recorded_count}")
+    print(f"Manually marked (left out of Pending):  {manual_count}")
     print(f"File: {EXPORT_PATH}")
 
 
