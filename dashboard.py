@@ -10,6 +10,7 @@ Run with:
 from __future__ import annotations
 
 import html
+import math
 import sqlite3
 from datetime import datetime
 
@@ -48,6 +49,7 @@ GRID_COLOR = "rgba(148,163,184,.10)"
 TYPE_TITLE, TYPE_LABEL, TYPE_AXIS = 13, 11, 10  # the only three chart text sizes
 BAR_RADIUS = 4
 BAR_GAP = 0.45
+BAR_GROUP_GAP = 0.08  # between the bars of one group (e.g. COGS | revenue in a month)
 MIN_POSITIONS = 5  # below this, P&L / fee-rate color is noise, so it's grayed out
 
 st.markdown(
@@ -213,6 +215,7 @@ def style_chart(fig, height: int = 300):
                     font=dict(size=TYPE_LABEL, color="#cbd5e1"), itemclick=False, itemdoubleclick=False),
         hoverlabel=dict(bgcolor="#131d34", bordercolor=BORDER, font=dict(family=CHART_FONT, size=TYPE_LABEL, color="#e2e8f0")),
         bargap=BAR_GAP,
+        bargroupgap=BAR_GROUP_GAP,
         height=height,
     )
     if has_title:
@@ -234,13 +237,14 @@ def month_ticktext(months) -> list[str]:
 def zero_aligned_ranges(*extents, pad: float = 1.25) -> list[list[float]]:
     """Ranges for several y-axes that put zero at the same height, so a line
     on a secondary axis can't seem to cross the bars' baseline where it
-    doesn't. Picks the shared zero position that wastes the least space."""
+    doesn't. Picks the shared zero position that wastes the least space;
+    zero sits on the floor when nothing is negative."""
     ext = [(min(lo, 0), max(hi, 0)) for lo, hi in extents]
 
     def spans(f):
-        return [max(-lo / f, hi / (1 - f)) for lo, hi in ext]
+        return [max((-lo / f if f else math.inf) if lo < 0 else 0, hi / (1 - f)) for lo, hi in ext]
 
-    f = min((i / 100 for i in range(5, 96)),
+    f = min((i / 100 for i in range(0, 96)),
             key=lambda f: sum(s / ((hi - lo) or 1) for s, (lo, hi) in zip(spans(f), ext)))
     return [[-f * s * pad, (1 - f) * s * pad] for s in spans(f)]
 
@@ -382,6 +386,36 @@ def after_fees(sells: pd.DataFrame) -> pd.Series:
     matched-pair P&L); the DB's total_price is Gross Sale, so rebuild it."""
     price = pd.to_numeric(sells["price_per_ticket"], errors="coerce")
     return (sells["quantity"] * price).fillna(sells["total_price"])
+
+
+def monthly_matched_pl(excel_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per month sold: the cost of the tickets sold that month (COGS) vs the
+    after-fee revenue they brought in. Cost is allocated per ticket: each
+    event's BL total cost / BL quantity (never the sheet's "$ per Tix"
+    formula column), times the tickets a sale row sold. Events join on the
+    trimmed, lowercased name, as the event lookup does. Loss and Refund rows
+    stay in: a loss carries cost with no revenue, a refund recovers some.
+    Returns (monthly, orphans), orphans being sell rows with no BL cost or
+    no sale date — surfaced by the caller, never silently dropped."""
+    bl = excel_df[excel_df["transaction_type"] == "buy"]
+    sl = excel_df[excel_df["transaction_type"] == "sell"].copy()
+
+    def key(names):
+        return names.fillna("").astype(str).str.strip().str.casefold()
+
+    lots = bl.groupby(key(bl["artist_or_event"])).agg(cost=("total_price", "sum"), qty=("quantity", "sum"))
+    cost_per_ticket = lots["cost"] / lots["qty"].where(lots["qty"] > 0)
+    sl["cogs"] = sl["quantity"] * key(sl["artist_or_event"]).map(cost_per_ticket)
+    sl["revenue"] = after_fees(sl)
+    sl["month"] = pd.to_datetime(sl["purchase_date"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+
+    orphans = sl[sl["cogs"].isna() | sl["month"].isna()]
+    monthly = sl.drop(orphans.index).groupby("month").agg(
+        cogs=("cogs", "sum"), revenue=("revenue", "sum"), tickets=("quantity", "sum")
+    )
+    monthly["pl"] = monthly["revenue"] - monthly["cogs"]
+    monthly["margin"] = monthly["pl"] / monthly["revenue"].where(monthly["revenue"] != 0)
+    return monthly, orphans
 
 
 def _records(frame: pd.DataFrame) -> list:
@@ -870,15 +904,22 @@ with st.container(border=True, key="zone-charts"):
         "05 · analytics",
         tone=MUTED,
         sub="Working sheet only · buys by purchase date, sales (after fees) by date sold, per month. "
-        "Months with no activity are skipped.",
+        "Months with no activity are skipped. The window applies to both time charts.",
     )
+    window = st.segmented_control(
+        "Window", ["Last 13 months", "All time"], default="Last 13 months",
+        key="ts_window", label_visibility="collapsed",
+    )
+    window_start = (
+        None if window == "All time" else (pd.Timestamp.today().to_period("M") - 12).to_timestamp()
+    )
+
+    def in_window(monthly: pd.DataFrame) -> pd.DataFrame:
+        return monthly if window_start is None else monthly[monthly.index >= window_start]
+
     if ts_df.empty:
         st.caption("No dated transactions to chart yet.")
     else:
-        window = st.segmented_control(
-            "Window", ["Last 13 months", "All time"], default="Last 13 months",
-            key="ts_window", label_visibility="collapsed",
-        )
         ts_df["month"] = ts_df["purchase_date"].dt.to_period("M").dt.to_timestamp()
         ts_df["amount"] = ts_df["total_price"].where(ts_df["transaction_type"] == "buy", after_fees(ts_df))
         monthly = (
@@ -888,9 +929,7 @@ with st.container(border=True, key="zone-charts"):
         # Running cash position over all history, so the 13-month view picks
         # up where earlier months left it rather than restarting at zero.
         monthly["cum_net"] = (monthly["sell"] - monthly["buy"]).cumsum()
-        if window != "All time":
-            cutoff = (pd.Timestamp.today().to_period("M") - 12).to_timestamp()
-            monthly = monthly[monthly.index >= cutoff]
+        monthly = in_window(monthly)
 
         x = monthly.index.strftime("%Y-%m").tolist()
         full_month = monthly.index.strftime("%B %Y")
@@ -934,6 +973,70 @@ with st.container(border=True, key="zone-charts"):
         )
         fig_ts.update_xaxes(type="category", tickvals=x, ticktext=month_ticktext(monthly.index), tickangle=0)
         st.plotly_chart(fig_ts, use_container_width=True, config=CHART_CONFIG)
+
+    section_header(
+        "Monthly matched P&L",
+        "by month sold",
+        tone=MUTED,
+        sub="Per month: the cost of the tickets sold that month (event cost ÷ tickets bought, per ticket sold) "
+        "vs the after-fee revenue those same tickets brought in. Loss and Refund rows included.",
+    )
+    pl_all, pl_orphans = monthly_matched_pl(excel_df)
+    if len(pl_orphans):
+        st.markdown(
+            f'<div class="callout">{len(pl_orphans)} sale row(s) '
+            f"({pl_orphans['quantity'].sum():,.0f} tickets, ${pl_orphans['revenue'].sum():,.2f} revenue) have no "
+            "matching purchase event or no sale date, so they're left out of this chart.</div>",
+            unsafe_allow_html=True,
+        )
+    pl_monthly = in_window(pl_all)
+    if pl_monthly.empty:
+        st.caption("No matched sales in this window yet.")
+    else:
+        x = pl_monthly.index.strftime("%Y-%m").tolist()
+
+        def _signed(v, cents=True):
+            return f"{'−' if v < 0 else '+'}${abs(v):,.{2 if cents else 0}f}"
+
+        tip = [
+            (m.strftime("%B %Y"), r.cogs, r.revenue, _signed(r.pl),
+             "—" if pd.isna(r.margin) else f"{r.margin:.1%}", int(r.tickets))
+            for m, r in pl_monthly.iterrows()
+        ]
+        hover = ("<b>%{customdata[0]}</b><br>COGS $%{customdata[1]:,.2f}<br>Revenue $%{customdata[2]:,.2f}"
+                 "<br>P&L %{customdata[3]}<br>Margin %{customdata[4]}<br>%{customdata[5]:,} tickets sold<extra></extra>")
+        fig_pl = go.Figure()
+        fig_pl.add_bar(x=x, y=pl_monthly["cogs"], name="COGS", marker_color=SPEND_COLOR, customdata=tip, hovertemplate=hover)
+        fig_pl.add_bar(x=x, y=pl_monthly["revenue"], name="Revenue", marker_color=REVENUE_COLOR, customdata=tip, hovertemplate=hover)
+        fig_pl.add_scatter(
+            x=x, y=pl_monthly["margin"], yaxis="y2", name="Margin %", mode="lines",
+            line=dict(color=INK_MARK_COLOR, width=1.5), opacity=0.7, customdata=tip, hovertemplate=hover,
+        )
+        # P&L over each month's taller bar; the sign carries it without color.
+        for xm, (_, r) in zip(x, pl_monthly.iterrows()):
+            fig_pl.add_annotation(
+                x=xm, y=max(r.cogs, r.revenue), text=_signed(r.pl, cents=False), showarrow=False,
+                yanchor="bottom", yshift=3, font=dict(size=TYPE_LABEL, color=POS if r.pl >= 0 else NEG),
+            )
+        fig_pl.update_layout(barmode="group")
+        style_chart(fig_pl, height=320)
+        margins = pl_monthly["margin"].dropna()
+        bars_range, margin_range = zero_aligned_ranges(
+            (0, pl_monthly[["cogs", "revenue"]].to_numpy().max() * 1.15),
+            # 0–60% unless a month falls outside it (a loss month, a tiny high-margin one).
+            (min(0, margins.min()) if len(margins) else 0, max(0.6, margins.max()) if len(margins) else 0.6),
+            pad=1.0,
+        )
+        fig_pl.update_layout(
+            margin_r=4,
+            yaxis=dict(range=bars_range, tickformat="$~s", nticks=6, zeroline=True, zerolinecolor=GRID_COLOR,
+                       title_text="COGS / revenue"),
+            yaxis2=dict(overlaying="y", side="right", range=margin_range, tickformat=".0%", dtick=0.2,
+                        showgrid=False, showline=False, ticks="", tickfont=dict(size=TYPE_AXIS),
+                        title=dict(text="Margin (line)", font=dict(size=TYPE_LABEL, color=MUTED))),
+        )
+        fig_pl.update_xaxes(type="category", tickvals=x, ticktext=month_ticktext(pl_monthly.index), tickangle=0)
+        st.plotly_chart(fig_pl, use_container_width=True, config=CHART_CONFIG)
 
     section_header(
         "Purchase accounts · sale marketplaces",
