@@ -1,28 +1,43 @@
 """
-One-time historical import from the existing Working tickets copy.xlsm
-workbook into transactions.db.
+Sync the BL and SL sheets of Working tickets copy.xlsm into transactions.db
+(source='excel' rows).
 
-Read-only: this script never calls .save() on the workbook and never
-writes back to Working tickets copy.xlsm in any way.
+Each sheet row is keyed as before: BL by row number (excel-bl-<row>), SL by
+its SID column (excel-sl-<SID>). For every sheet row:
 
-Column positions are read dynamically from each sheet's header row (row 2)
-rather than hardcoded, since this workbook's layout has changed between
-versions.
+  - no DB row with that key        -> ADD
+  - same key, same event name      -> UPDATE any sheet fields that changed
+  - same key, different event name -> FLAG, left alone (a row inserted or
+    deleted in BL, or in SL's SEQUENCE-numbered SIDs 1-44, shifts keys onto
+    a different sale; updating would overwrite one sale with another)
 
-Safe to re-run: save_transaction() dedupes on raw_email_uid via
-INSERT OR IGNORE, so already-imported rows are skipped on subsequent runs.
+and every source='excel' DB row whose key is no longer in the sheet is
+FLAGGED. Nothing is ever deleted. Rows are updated in place, so their ids,
+and the matches / crosscheck links that point at them, are kept.
 
-Run with:
-    python import_excel.py
+The old import only inserted missing keys, so sheet edits never reached
+the DB (BL row 124 stayed $330 high).
+
+Dry run by default: prints the plan and writes nothing. Back up
+transactions.db, review the plan, then apply:
+
+    python import_excel.py            # dry run
+    python import_excel.py --apply
+
+Read-only against the workbook: it is never saved or written back.
+Column positions come from each sheet's header row (row 2), since the
+layout has changed between versions.
 """
 
+import argparse
 import datetime
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
 
-from db import is_processed, save_transaction
+from db import COLUMNS, get_connection
 
 SOURCE_PATH = Path(__file__).parent / "Working tickets copy.xlsm"
 
@@ -83,117 +98,202 @@ def to_transfer_status(value):
     return str(value).strip().lower()
 
 
-def import_bl(ws):
-    col_map, rows_iter = read_header_map(ws)
-    read_count = 0
-    inserted = 0
-    skipped = 0
+# Fields taken from the sheet; anything else on an excel row is left alone.
+SHEET_FIELDS = [
+    "platform",
+    "artist_or_event",
+    "venue",
+    "event_date",
+    "purchase_date",
+    "quantity",
+    "price_per_ticket",
+    "total_price",
+    "transfer_status",
+]
 
+
+def _row(transaction_type, uid, **fields):
+    data = {col: None for col in COLUMNS}
+    data.update(
+        is_ticket_transaction=True,
+        transaction_type=transaction_type,
+        needs_review=False,
+        raw_email_uid=uid,
+        source="excel",
+        **fields,
+    )
+    return data
+
+
+def bl_rows(ws):
+    """(sheet row number, transaction dict) for every BL row with an Event."""
+    col_map, rows_iter = read_header_map(ws)
     for row_num, row in enumerate(rows_iter, start=HEADER_ROW + 1):
         event = get(row, col_map, "Event")
         if event is None or str(event).strip() == "":
             continue
-
-        read_count += 1
-        uid = f"excel-bl-{row_num}"
-        if is_processed(uid):
-            skipped += 1
-            continue
-
-        data = {
-            "is_ticket_transaction": True,
-            "transaction_type": "buy",
-            "platform": get(row, col_map, "Account"),
-            "order_id": None,
-            "artist_or_event": str(event).strip(),
-            "venue": get(row, col_map, "Venue"),
-            "event_date": to_date_str(get(row, col_map, "Event Date")),
-            "event_time": None,
-            "purchase_date": to_date_str(get(row, col_map, "Date Purchased")),
-            "ticket_type": None,
-            "section": None,
-            "row": None,
-            "seat": None,
-            "quantity": to_int(get(row, col_map, "Quantity")),
-            "price_per_ticket": to_float(get(row, col_map, "$ per Tix")),
-            "total_price": to_float(get(row, col_map, "Total Cost")),
-            "fees": None,
-            "currency": None,
-            "transfer_status": None,
-            "confirmation_number": None,
-            "needs_review": False,
-            "review_reason": None,
-            "raw_email_uid": uid,
-            "source": "excel",
-        }
-        save_transaction(data)
-        inserted += 1
-
-    return read_count, inserted, skipped
+        yield row_num, _row(
+            "buy",
+            f"excel-bl-{row_num}",
+            platform=get(row, col_map, "Account"),
+            artist_or_event=str(event).strip(),
+            venue=get(row, col_map, "Venue"),
+            event_date=to_date_str(get(row, col_map, "Event Date")),
+            purchase_date=to_date_str(get(row, col_map, "Date Purchased")),
+            quantity=to_int(get(row, col_map, "Quantity")),
+            price_per_ticket=to_float(get(row, col_map, "$ per Tix")),
+            total_price=to_float(get(row, col_map, "Total Cost")),
+        )
 
 
-def import_sl(ws):
+def sl_rows(ws):
+    """(sheet row number, transaction dict) for every SL row with a SID."""
     col_map, rows_iter = read_header_map(ws)
-    read_count = 0
-    inserted = 0
-    skipped = 0
-
-    for row in rows_iter:
+    for row_num, row in enumerate(rows_iter, start=HEADER_ROW + 1):
         sid = get(row, col_map, "SID")
         if sid is None or str(sid).strip() == "":
             continue
+        yield row_num, _row(
+            "sell",
+            f"excel-sl-{str(sid).strip()}",
+            platform=get(row, col_map, "Marketplace"),
+            artist_or_event=str(get(row, col_map, "Event") or "").strip() or None,
+            venue=get(row, col_map, "Venue"),
+            event_date=to_date_str(get(row, col_map, "Event Date")),
+            purchase_date=to_date_str(get(row, col_map, "Date Sold")),
+            quantity=to_int(get(row, col_map, "Tickets Sold")),
+            price_per_ticket=to_float(get(row, col_map, "Sell Price (per ticket)")),
+            total_price=to_float(get(row, col_map, "Gross Sale")),
+            transfer_status=to_transfer_status(get(row, col_map, "Transferred?")),
+        )
 
-        read_count += 1
-        uid = f"excel-sl-{str(sid).strip()}"
-        if is_processed(uid):
-            skipped += 1
+
+def _event_key(name) -> str:
+    return " ".join(str(name or "").lower().split())
+
+
+def _same(a, b) -> bool:
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) < 1e-6
+    return a == b
+
+
+def plan_sync(sheet_rows, db_rows):
+    """
+    Compare sheet rows [(row_num, data)] with existing source='excel' DB
+    rows of one sheet ({uid: row dict}). Returns (adds, updates, flags):
+    adds [(row_num, data)], updates [(row_num, db_row, {field: (old, new)})],
+    flags [(row_num or None, uid, reason)].
+    """
+    adds, updates, flags = [], [], []
+    seen = set()
+    for row_num, data in sheet_rows:
+        uid = data["raw_email_uid"]
+        if uid in seen:
+            flags.append((row_num, uid, "key appears twice in the sheet; second copy ignored"))
             continue
+        seen.add(uid)
+        current = db_rows.get(uid)
+        if current is None:
+            adds.append((row_num, data))
+        elif _event_key(current["artist_or_event"]) != _event_key(data["artist_or_event"]):
+            flags.append(
+                (
+                    row_num,
+                    uid,
+                    f"event changed: DB {current['artist_or_event']!r} "
+                    f"(qty {current['quantity']}, ${current['total_price']}) vs sheet "
+                    f"{data['artist_or_event']!r} (qty {data['quantity']}, ${data['total_price']})",
+                )
+            )
+        else:
+            changes = {
+                f: (current[f], data[f]) for f in SHEET_FIELDS if not _same(current[f], data[f])
+            }
+            if changes:
+                updates.append((row_num, current, changes))
+    for uid in sorted(set(db_rows) - seen):
+        r = db_rows[uid]
+        flags.append(
+            (
+                None,
+                uid,
+                f"not in sheet any more: id {r['id']} {r['artist_or_event']!r} "
+                f"{r['event_date']} qty {r['quantity']} ${r['total_price']}",
+            )
+        )
+    return adds, updates, flags
 
-        data = {
-            "is_ticket_transaction": True,
-            "transaction_type": "sell",
-            "platform": get(row, col_map, "Marketplace"),
-            "order_id": None,
-            "artist_or_event": str(get(row, col_map, "Event") or "").strip() or None,
-            "venue": get(row, col_map, "Venue"),
-            "event_date": to_date_str(get(row, col_map, "Event Date")),
-            "event_time": None,
-            "purchase_date": to_date_str(get(row, col_map, "Date Sold")),
-            "ticket_type": None,
-            "section": None,
-            "row": None,
-            "seat": None,
-            "quantity": to_int(get(row, col_map, "Tickets Sold")),
-            "price_per_ticket": to_float(get(row, col_map, "Sell Price (per ticket)")),
-            "total_price": to_float(get(row, col_map, "Gross Sale")),
-            "fees": None,
-            "currency": None,
-            "transfer_status": to_transfer_status(get(row, col_map, "Transferred?")),
-            "confirmation_number": None,
-            "needs_review": False,
-            "review_reason": None,
-            "raw_email_uid": uid,
-            "source": "excel",
-        }
-        save_transaction(data)
-        inserted += 1
 
-    return read_count, inserted, skipped
+def load_db_rows(conn, transaction_type):
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM transactions WHERE source = 'excel' AND transaction_type = ?",
+        (transaction_type,),
+    ).fetchall()
+    return {r["raw_email_uid"]: dict(r) for r in rows}
+
+
+def print_plan(sheet, adds, updates, flags) -> None:
+    print(f"\n=== {sheet}: {len(adds)} add, {len(updates)} update, {len(flags)} flag ===")
+    for row_num, d in adds:
+        print(
+            f"  ADD    row {row_num:>4}  {d['raw_email_uid']:<14} {d['artist_or_event']!r} "
+            f"{d['event_date']} qty {d['quantity']} ${d['total_price']}"
+        )
+    for row_num, cur, changes in updates:
+        diff = "; ".join(f"{f}: {old!r} -> {new!r}" for f, (old, new) in changes.items())
+        print(f"  UPDATE row {row_num:>4}  {cur['raw_email_uid']:<14} id {cur['id']} {cur['artist_or_event']!r}: {diff}")
+    for row_num, uid, reason in flags:
+        where = f"row {row_num:>4}" if row_num else "no row  "
+        print(f"  FLAG   {where}  {uid:<14} {reason}")
+
+
+def apply_plan(conn, adds, updates) -> None:
+    column_list = ", ".join(COLUMNS)
+    placeholders = ", ".join("?" for _ in COLUMNS)
+    for _, data in adds:
+        conn.execute(
+            f"INSERT INTO transactions ({column_list}) VALUES ({placeholders})",
+            [data[c] for c in COLUMNS],
+        )
+    for _, cur, changes in updates:
+        sets = ", ".join(f"{f} = ?" for f in changes)
+        conn.execute(
+            f"UPDATE transactions SET {sets} WHERE id = ?",
+            [new for _, new in changes.values()] + [cur["id"]],
+        )
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--apply", action="store_true", help="write the planned adds/updates")
+    args = parser.parse_args()
+
     wb = load_workbook(SOURCE_PATH, keep_vba=True, read_only=True, data_only=True)
     try:
-        bl_read, bl_inserted, bl_skipped = import_bl(wb["BL"])
-        sl_read, sl_inserted, sl_skipped = import_sl(wb["SL"])
+        sheets = {"BL": ("buy", list(bl_rows(wb["BL"]))), "SL": ("sell", list(sl_rows(wb["SL"])))}
     finally:
         wb.close()
 
-    print("--- Import summary ---")
-    print(f"BL rows read:     {bl_read}")
-    print(f"SL rows read:     {sl_read}")
-    print(f"Rows inserted:    {bl_inserted + sl_inserted}")
-    print(f"Rows skipped:     {bl_skipped + sl_skipped}")
+    conn = get_connection()
+    try:
+        plans = {}
+        for sheet, (ttype, rows) in sheets.items():
+            plans[sheet] = plan_sync(rows, load_db_rows(conn, ttype))
+            print_plan(sheet, *plans[sheet])
+
+        if not args.apply:
+            print("\nDry run: nothing written. Re-run with --apply to write adds and updates.")
+            return
+        with conn:
+            for adds, updates, _ in plans.values():
+                apply_plan(conn, adds, updates)
+        n_add = sum(len(a) for a, _, _ in plans.values())
+        n_upd = sum(len(u) for _, u, _ in plans.values())
+        print(f"\nApplied: {n_add} added, {n_upd} updated. Flagged rows were not touched.")
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
