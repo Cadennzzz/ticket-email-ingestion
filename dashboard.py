@@ -933,11 +933,14 @@ with st.container(border=True, key="zone-charts"):
 
         x = monthly.index.strftime("%Y-%m").tolist()
         full_month = monthly.index.strftime("%B %Y")
-        monthly["margin"] = (monthly["sell"] - monthly["buy"]) / monthly["sell"].where(monthly["sell"] != 0)
-        margin_str = ["no sales" if pd.isna(m) else f"{m:+.0%}" for m in monthly["margin"]]
-        tip = list(zip(full_month, monthly["buy"], monthly["sell"], margin_str))
+        # Net dollars, not margin %: spend (by purchase date) and revenue (by
+        # sale date) are different tickets, so a ratio of them is meaningless;
+        # the matched P&L chart below carries the like-for-like margin.
+        monthly["net"] = monthly["sell"] - monthly["buy"]
+        net_str = [f"{'−' if n < 0 else '+'}${abs(n):,.0f}" for n in monthly["net"]]
+        tip = list(zip(full_month, monthly["buy"], monthly["sell"], net_str))
         hover = ("<b>%{customdata[0]}</b><br>Spent $%{customdata[1]:,.0f}<br>Revenue $%{customdata[2]:,.0f}"
-                 "<br>Margin %{customdata[3]}<extra></extra>")
+                 "<br>Net %{customdata[3]}<extra></extra>")
         fig_ts = go.Figure()
         fig_ts.add_bar(x=x, y=monthly["buy"], name="Spent", marker_color=SPEND_COLOR, customdata=tip, hovertemplate=hover)
         fig_ts.add_bar(x=x, y=monthly["sell"], name="Revenue", marker_color=REVENUE_COLOR, customdata=tip, hovertemplate=hover)
@@ -949,11 +952,11 @@ with st.container(border=True, key="zone-charts"):
             customdata=full_month,
             hovertemplate="<b>%{customdata}</b><br>Cumulative net %{y:$,.0f}<extra></extra>",
         )
-        # Margin over each month's taller bar, as the P&L chart labels its dollars.
-        for xm, (_, r), label in zip(x, monthly.iterrows(), margin_str):
+        # Net over each month's taller bar, as the P&L chart labels its dollars.
+        for xm, (_, r), label in zip(x, monthly.iterrows(), net_str):
             fig_ts.add_annotation(
                 x=xm, y=max(r["buy"], r["sell"]), text=label, showarrow=False, yanchor="bottom", yshift=3,
-                font=dict(size=TYPE_LABEL, color=MUTED if pd.isna(r["margin"]) else POS if r["margin"] >= 0 else NEG),
+                font=dict(size=TYPE_LABEL, color=POS if r["net"] >= 0 else NEG),
             )
         fig_ts.update_layout(barmode="group")
         style_chart(fig_ts, height=340)
