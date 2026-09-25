@@ -933,40 +933,38 @@ with st.container(border=True, key="zone-charts"):
 
         x = monthly.index.strftime("%Y-%m").tolist()
         full_month = monthly.index.strftime("%B %Y")
+        monthly["margin"] = (monthly["sell"] - monthly["buy"]) / monthly["sell"].where(monthly["sell"] != 0)
+        margin_str = ["no sales" if pd.isna(m) else f"{m:+.0%}" for m in monthly["margin"]]
+        tip = list(zip(full_month, monthly["buy"], monthly["sell"], margin_str))
+        hover = ("<b>%{customdata[0]}</b><br>Spent $%{customdata[1]:,.0f}<br>Revenue $%{customdata[2]:,.0f}"
+                 "<br>Margin %{customdata[3]}<extra></extra>")
         fig_ts = go.Figure()
-        fig_ts.add_bar(
-            x=x, y=-monthly["buy"], name="Spent", marker_color=SPEND_COLOR,
-            customdata=list(zip(full_month, monthly["buy"])),
-            hovertemplate="<b>%{customdata[0]}</b><br>Spent $%{customdata[1]:,.0f}<extra></extra>",
-        )
-        fig_ts.add_bar(
-            x=x, y=monthly["sell"], name="Revenue", marker_color=REVENUE_COLOR,
-            customdata=full_month,
-            hovertemplate="<b>%{customdata}</b><br>Revenue $%{y:,.0f}<extra></extra>",
-        )
+        fig_ts.add_bar(x=x, y=monthly["buy"], name="Spent", marker_color=SPEND_COLOR, customdata=tip, hovertemplate=hover)
+        fig_ts.add_bar(x=x, y=monthly["sell"], name="Revenue", marker_color=REVENUE_COLOR, customdata=tip, hovertemplate=hover)
+        # With the bars side by side, this line is the only read on running
+        # net position, so it's drawn at full line weight rather than faded.
         fig_ts.add_scatter(
-            x=x, y=monthly["cum_net"], yaxis="y2", name="Cumulative net", mode="lines",
-            line=dict(color=INK_MARK_COLOR, width=1.5), opacity=0.5,
+            x=x, y=monthly["cum_net"], yaxis="y2", name="Cumulative net", mode="lines+markers",
+            line=dict(color=INK_MARK_COLOR, width=2), marker=dict(size=8, color=INK_MARK_COLOR, line=dict(width=2, color=CHART_SURFACE)),
             customdata=full_month,
             hovertemplate="<b>%{customdata}</b><br>Cumulative net %{y:$,.0f}<extra></extra>",
         )
-        # Direct labels on the two extremes only; the tooltip carries the rest.
-        for series, sign, anchor in (("buy", -1, "top"), ("sell", 1, "bottom")):
-            if monthly[series].max() > 0:
-                peak = monthly[series].idxmax()
-                fig_ts.add_annotation(
-                    x=peak.strftime("%Y-%m"), y=sign * monthly.at[peak, series], text=f"${monthly.at[peak, series]:,.0f}",
-                    showarrow=False, yanchor=anchor, yshift=sign * 3, font=dict(size=TYPE_LABEL, color="#cbd5e1"),
-                )
-        fig_ts.update_layout(barmode="relative")
-        style_chart(fig_ts, height=320)
+        # Margin over each month's taller bar, as the P&L chart labels its dollars.
+        for xm, (_, r), label in zip(x, monthly.iterrows(), margin_str):
+            fig_ts.add_annotation(
+                x=xm, y=max(r["buy"], r["sell"]), text=label, showarrow=False, yanchor="bottom", yshift=3,
+                font=dict(size=TYPE_LABEL, color=MUTED if pd.isna(r["margin"]) else POS if r["margin"] >= 0 else NEG),
+            )
+        fig_ts.update_layout(barmode="group")
+        style_chart(fig_ts, height=340)
         bars_range, line_range = zero_aligned_ranges(
-            (-monthly["buy"].max(), monthly["sell"].max()), (monthly["cum_net"].min(), monthly["cum_net"].max())
+            (0, monthly[["buy", "sell"]].to_numpy().max() * 1.12), (monthly["cum_net"].min(), monthly["cum_net"].max()),
+            pad=1.05,
         )
         fig_ts.update_layout(
             margin_r=4,
             yaxis=dict(range=bars_range, tickformat="$~s", nticks=6, zeroline=True, zerolinecolor=GRID_COLOR,
-                       title_text="Spent (−) / revenue (+)"),
+                       title_text="Spent / revenue"),
             yaxis2=dict(overlaying="y", side="right", range=line_range, tickformat="$~s", nticks=6, showgrid=False,
                         showline=False, ticks="", tickfont=dict(size=TYPE_AXIS),
                         title=dict(text="Cumulative net (line)", font=dict(size=TYPE_LABEL, color=MUTED))),
