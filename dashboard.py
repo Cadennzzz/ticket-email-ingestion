@@ -63,8 +63,8 @@ st.markdown(
   --lbl: .66rem;  /* every small uppercase label shares this size */
   --lift: inset 0 1px 0 rgba(255,255,255,.035);
 }}
-.block-container {{ padding-top: 2rem; padding-bottom: 3rem; max-width: 1400px; }}
-[data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {{ gap: 1.1rem; }}
+.block-container {{ padding-top: 1rem; padding-bottom: 3rem; max-width: 1400px; }}
+[data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {{ gap: .8rem; }}
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{ color: var(--muted); font-size: .8rem; }}
 /* Streamlit pulls markdown up by -1rem to hide a trailing <p> margin; our
    HTML blocks have none, so that pull made cards sit flush on zone edges. */
@@ -74,7 +74,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 
 /* Header band */
 .hdr {{ display: flex; align-items: flex-end; justify-content: space-between;
-  border-bottom: 1px solid var(--border); padding-bottom: .9rem; }}
+  border-bottom: 1px solid var(--border); padding-bottom: .6rem; margin-bottom: .3rem; }}
 .hdr h1 {{ font-size: 1.65rem; font-weight: 700; letter-spacing: -.02em; margin: 0; padding: 0; }}
 .hdr h1 .tick {{ color: var(--accent); }}
 .hdr .meta {{ color: var(--muted); font-family: var(--mono); font-size: .78rem; }}
@@ -100,7 +100,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 /* Stat cards */
 .stats {{ display: grid; gap: .6rem; }}
 .card {{ container-type: inline-size; background: var(--card); border: 1px solid var(--border); border-radius: .6rem;
-  padding: .65rem .85rem .7rem; min-width: 0; min-height: 6.4rem; box-shadow: var(--lift); }}
+  padding: .65rem .85rem .7rem; min-width: 0; min-height: 5rem; box-shadow: var(--lift); }}
 .card .lbl {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .12em;
   text-transform: uppercase; color: var(--muted); }}
 .card .val {{ font-family: var(--mono); font-size: clamp(1rem, 15cqi, 1.55rem); font-weight: 600;
@@ -122,7 +122,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 .ev-head .meta {{ font-family: var(--mono); font-size: .78rem; color: var(--muted); }}
 
 /* Banner + callouts */
-.banner {{ display: flex; gap: .7rem; align-items: center; padding: .6rem .9rem; border-radius: .6rem;
+.banner {{ display: flex; gap: .7rem; align-items: center; padding: .45rem .9rem; border-radius: .6rem;
   border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
   background: color-mix(in srgb, var(--warn) 8%, transparent); color: #fde68a; font-size: .86rem; }}
 .banner b {{ color: var(--warn); font-family: var(--mono); }}
@@ -157,6 +157,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 
 /* Tabs */
 .stTabs [data-baseweb="tab-list"] {{ gap: 1.2rem; border-bottom: 1px solid var(--border); }}
+.stTabs [data-baseweb="tab-panel"] {{ padding-top: .5rem; }}
 .stTabs [data-baseweb="tab"] p {{ font-family: var(--mono); font-size: .8rem; letter-spacing: .04em; }}
 </style>
 """,
@@ -456,20 +457,18 @@ st.markdown(
 
 if pending_count:
     st.markdown(
-        f'<div class="banner"><span>⚠</span><div><b>{pending_count}</b> scraped transaction(s) pending review '
-        "(source='email', not yet promoted or recorded in the sheet) — excluded from the metrics below. "
-        "Run <code>python review_pending.py</code> to list them.</div></div>",
+        f'<div class="banner"><span>⚠</span><div><b>{pending_count}</b> scraped transaction(s) not yet in the sheet '
+        "— excluded from the metrics below. See the Pending tab or run <code>python review_pending.py</code>.</div></div>",
         unsafe_allow_html=True,
     )
 
 # --- Overview ------------------------------------------------------------------
 with st.container(border=True, key="zone-overview"):
-    section_header("Overview", "working sheet")
     profit = (total_revenue - total_spent) if has_both_sides else None
     profit_tone = None if profit is None else ("pos" if profit >= 0 else "neg")
     vcol, mcol, rcol = st.columns([2, 3, 1], gap="medium")
     with vcol:
-        st.markdown('<div class="group-lbl">Volume</div>', unsafe_allow_html=True)
+        st.markdown('<div class="group-lbl">Working sheet · volume</div>', unsafe_allow_html=True)
         st.markdown(
             stat_grid(
                 [
@@ -968,20 +967,22 @@ with tab_charts, st.container(border=True, key="zone-charts"):
                 font=dict(size=TYPE_LABEL, color=POS if r["net"] >= 0 else NEG),
             )
         fig_ts.update_layout(barmode="group")
-        style_chart(fig_ts, height=340)
+        # Short enough that both time charts fit one laptop screen; the margins
+        # below are tightened to match, so labels keep their full size.
+        style_chart(fig_ts, height=205)
         bars_range, line_range = zero_aligned_ranges(
             (0, monthly[["buy", "sell"]].to_numpy().max() * 1.12), (monthly["cum_net"].min(), monthly["cum_net"].max()),
             pad=1.05,
         )
         fig_ts.update_layout(
-            margin_r=4,
+            margin_r=4, margin_t=22, margin_b=22, legend_y=1.08,
             yaxis=dict(range=bars_range, tickformat="$~s", nticks=6, zeroline=True, zerolinecolor=GRID_COLOR,
                        title_text="Spent / revenue"),
             yaxis2=dict(overlaying="y", side="right", range=line_range, tickformat="$~s", nticks=6, showgrid=False,
                         showline=False, ticks="", tickfont=dict(size=TYPE_AXIS),
                         title=dict(text="Cumulative net (line)", font=dict(size=TYPE_LABEL, color=MUTED))),
         )
-        fig_ts.update_xaxes(type="category", tickvals=x, ticktext=month_ticktext(monthly.index), tickangle=0)
+        fig_ts.update_xaxes(type="category", automargin=False, tickvals=x, ticktext=month_ticktext(monthly.index), tickangle=0)
         st.plotly_chart(fig_ts, use_container_width=True, config=CHART_CONFIG)
 
     section_header(
@@ -1029,7 +1030,7 @@ with tab_charts, st.container(border=True, key="zone-charts"):
                 yanchor="bottom", yshift=3, font=dict(size=TYPE_LABEL, color=POS if r.pl >= 0 else NEG),
             )
         fig_pl.update_layout(barmode="group")
-        style_chart(fig_pl, height=320)
+        style_chart(fig_pl, height=195)
         margins = pl_monthly["margin"].dropna()
         bars_range, margin_range = zero_aligned_ranges(
             (0, pl_monthly[["cogs", "revenue"]].to_numpy().max() * 1.15),
@@ -1038,14 +1039,14 @@ with tab_charts, st.container(border=True, key="zone-charts"):
             pad=1.0,
         )
         fig_pl.update_layout(
-            margin_r=4,
+            margin_r=4, margin_t=22, margin_b=22, legend_y=1.08,
             yaxis=dict(range=bars_range, tickformat="$~s", nticks=6, zeroline=True, zerolinecolor=GRID_COLOR,
                        title_text="COGS / revenue"),
             yaxis2=dict(overlaying="y", side="right", range=margin_range, tickformat=".0%", dtick=0.2,
                         showgrid=False, showline=False, ticks="", tickfont=dict(size=TYPE_AXIS),
                         title=dict(text="Margin (line)", font=dict(size=TYPE_LABEL, color=MUTED))),
         )
-        fig_pl.update_xaxes(type="category", tickvals=x, ticktext=month_ticktext(pl_monthly.index), tickangle=0)
+        fig_pl.update_xaxes(type="category", automargin=False, tickvals=x, ticktext=month_ticktext(pl_monthly.index), tickangle=0)
         st.plotly_chart(fig_pl, use_container_width=True, config=CHART_CONFIG)
 
     section_header(
