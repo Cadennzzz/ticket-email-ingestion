@@ -99,11 +99,11 @@ footer, #MainMenu {{ visibility: hidden; }}
 
 /* Stat cards */
 .stats {{ display: grid; gap: .6rem; }}
-.card {{ background: var(--card); border: 1px solid var(--border); border-radius: .6rem;
+.card {{ container-type: inline-size; background: var(--card); border: 1px solid var(--border); border-radius: .6rem;
   padding: .65rem .85rem .7rem; min-width: 0; min-height: 6.4rem; box-shadow: var(--lift); }}
 .card .lbl {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .12em;
   text-transform: uppercase; color: var(--muted); }}
-.card .val {{ font-family: var(--mono); font-size: 1.55rem; font-weight: 600;
+.card .val {{ font-family: var(--mono); font-size: clamp(1rem, 15cqi, 1.55rem); font-weight: 600;
   font-variant-numeric: tabular-nums; margin-top: .15rem; white-space: nowrap; }}
 .card .sub {{ color: var(--muted); font-size: .72rem; margin-top: .1rem; }}
 .card.warn {{ border-color: color-mix(in srgb, var(--warn) 45%, transparent);
@@ -464,7 +464,7 @@ if pending_count:
 
 # --- Overview ------------------------------------------------------------------
 with st.container(border=True, key="zone-overview"):
-    section_header("Overview", "01 · working sheet")
+    section_header("Overview", "working sheet")
     profit = (total_revenue - total_spent) if has_both_sides else None
     profit_tone = None if profit is None else ("pos" if profit >= 0 else "neg")
     vcol, mcol, rcol = st.columns([2, 3, 1], gap="medium")
@@ -509,6 +509,13 @@ with st.container(border=True, key="zone-overview"):
             unsafe_allow_html=True,
         )
 
+
+# --- Tabs ----------------------------------------------------------------------
+# The overview row above stays pinned; everything else lives in one tab each.
+# Streamlit still runs every tab per rerun, it just hides the inactive ones.
+tab_pending, tab_lookup, tab_charts, tab_ledger = st.tabs(
+    [f"Pending · {pending_count}", "Event lookup", "Analytics", "Ledger"]
+)
 
 # --- Event lookup --------------------------------------------------------------
 # Mirrors the workbook's "Event Lookup" tab (fed by its Inventory Dashboard),
@@ -571,8 +578,8 @@ def lookup_options(events: pd.DataFrame) -> list[str]:
 
 events_lookup = build_event_lookup(excel_df)
 
-with st.container(border=True, key="zone-lookup"):
-    section_header("Event lookup", "02 · lookup", sub="Working sheet only · type to search by event name.")
+with tab_lookup, st.container(border=True, key="zone-lookup"):
+    section_header("Event lookup", "lookup", sub="Working sheet only · type to search by event name.")
     if events_lookup.empty:
         empty_state("No working-sheet events to look up yet.")
     else:
@@ -845,10 +852,10 @@ def render_manually_marked(manual_df: pd.DataFrame) -> None:
 
 
 # --- Pending -------------------------------------------------------------------
-with st.container(border=True, key="zone-pending"):
+with tab_pending, st.container(border=True, key="zone-pending"):
     section_header(
         "Pending — not yet in working sheet",
-        "03 · inbox",
+        "inbox",
         count=pending_count,
         sub="Scraped from email, grouped by event / date / tier.",
     )
@@ -863,8 +870,8 @@ with st.container(border=True, key="zone-pending"):
 
 # --- Needs review --------------------------------------------------------------
 review_df = df[df["needs_review"]]
-with st.container(border=True, key="zone-review"):
-    section_header("Needs review", "04 · flagged", count=len(review_df), tone=WARN)
+with tab_pending, st.container(border=True, key="zone-review"):
+    section_header("Needs review", "flagged", count=len(review_df), tone=WARN)
     if review_df.empty:
         empty_state("Nothing flagged for review.")
     else:
@@ -898,25 +905,27 @@ ts_df = ts_df[ts_df["transaction_type"].isin(["buy", "sell"])]
 
 matches_df = load_matches()
 
-with st.container(border=True, key="zone-charts"):
+window = st.sidebar.segmented_control(
+    "Time window", ["Last 13 months", "All time"], default="Last 13 months",
+    key="ts_window", help="Applies to both time charts on the Analytics tab.",
+)
+window_start = (
+    None if window == "All time" else (pd.Timestamp.today().to_period("M") - 12).to_timestamp()
+)
+
+
+def in_window(monthly: pd.DataFrame) -> pd.DataFrame:
+    return monthly if window_start is None else monthly[monthly.index >= window_start]
+
+
+with tab_charts, st.container(border=True, key="zone-charts"):
     section_header(
         "Spend / revenue over time",
-        "05 · analytics",
+        "analytics",
         tone=MUTED,
         sub="Working sheet only · buys by purchase date, sales (after fees) by date sold, per month. "
-        "Months with no activity are skipped. The window applies to both time charts.",
+        "Months with no activity are skipped.",
     )
-    window = st.segmented_control(
-        "Window", ["Last 13 months", "All time"], default="Last 13 months",
-        key="ts_window", label_visibility="collapsed",
-    )
-    window_start = (
-        None if window == "All time" else (pd.Timestamp.today().to_period("M") - 12).to_timestamp()
-    )
-
-    def in_window(monthly: pd.DataFrame) -> pd.DataFrame:
-        return monthly if window_start is None else monthly[monthly.index >= window_start]
-
     if ts_df.empty:
         st.caption("No dated transactions to chart yet.")
     else:
@@ -1137,11 +1146,11 @@ with st.container(border=True, key="zone-charts"):
 
 # --- Matched pairs -------------------------------------------------------------
 if not matches_df.empty:
-    with st.container(border=True, key="zone-matches"):
+    with tab_ledger, st.container(border=True, key="zone-matches"):
         profit_col = next(
             (c for c in ("net_profit", "profit", "realized_profit") if c in matches_df.columns), None
         )
-        section_header("Matched buy/sell pairs", "06 · realized", count=len(matches_df), tone=MUTED)
+        section_header("Matched buy/sell pairs", "realized", count=len(matches_df), tone=MUTED)
         if profit_col:
             matched_profit = matches_df[profit_col].sum()
             st.markdown(
@@ -1182,8 +1191,8 @@ display_df["transaction_type"] = display_df["transaction_type"].fillna("Unknown"
 platforms = sorted(display_df["platform"].unique().tolist())
 types = sorted(display_df["transaction_type"].unique().tolist())
 
-with st.container(border=True, key="zone-all"):
-    section_header("All transactions", "07 · ledger", count=len(display_df), tone=MUTED)
+with tab_ledger, st.container(border=True, key="zone-all"):
+    section_header("All transactions", "ledger", count=len(display_df), tone=MUTED)
     fcol1, fcol2 = st.columns(2, gap="small")
     platform_filter = fcol1.multiselect("Filter by platform", platforms, default=platforms)
     type_filter = fcol2.multiselect("Filter by type", types, default=types)
