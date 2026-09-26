@@ -63,13 +63,13 @@ st.markdown(
   --lbl: .66rem;  /* every small uppercase label shares this size */
   --lift: inset 0 1px 0 rgba(255,255,255,.035);
 }}
-.block-container {{ padding-top: 1rem; padding-bottom: 3rem; max-width: 1400px; }}
-[data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {{ gap: .8rem; }}
+.block-container {{ padding-top: .4rem; padding-bottom: 3rem; max-width: 1400px; }}
+[data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {{ gap: .5rem; }}
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {{ color: var(--muted); font-size: .8rem; }}
 /* Streamlit pulls markdown up by -1rem to hide a trailing <p> margin; our
    HTML blocks have none, so that pull made cards sit flush on zone edges. */
-[data-testid="stMarkdownContainer"]:has(> .stats, > .card, > .banner, > .src-lines) {{ margin-bottom: 0; }}
-[class*="st-key-grp-"], [class*="st-key-flag-"] {{ margin-bottom: -.55rem; }}
+[data-testid="stMarkdownContainer"]:has(> .hdr, > .stats, > .card, > .banner, > .src-lines) {{ margin-bottom: 0; }}
+[class*="st-key-grp-"], [class*="st-key-flag-"] {{ margin-bottom: -.2rem; }}
 footer, #MainMenu {{ visibility: hidden; }}
 
 /* Header band */
@@ -90,7 +90,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 .sec-sub {{ color: var(--muted); font-size: .8rem; margin: -.1rem 0 .5rem 0; }}
 
 /* Zones = keyed bordered containers, each with a colored top rule */
-[class*="st-key-zone-"] {{ background: var(--card-2); border-top: 2px solid var(--zone, var(--border)) !important;
+[class*="st-key-zone-"] {{ padding: 10px 12px !important; gap: .65rem; background: var(--card-2); border-top: 2px solid var(--zone, var(--border)) !important;
   box-shadow: var(--lift); }}
 .st-key-zone-overview, .st-key-zone-lookup {{ --zone: var(--accent); }}
 .st-key-zone-pending  {{ --zone: var(--accent); }}
@@ -100,17 +100,18 @@ footer, #MainMenu {{ visibility: hidden; }}
 /* Stat cards */
 .stats {{ display: grid; gap: .6rem; }}
 .card {{ container-type: inline-size; background: var(--card); border: 1px solid var(--border); border-radius: .6rem;
-  padding: .65rem .85rem .7rem; min-width: 0; min-height: 5rem; box-shadow: var(--lift); }}
+  padding: .4rem .65rem .45rem; min-width: 0; box-shadow: var(--lift); }}
 .card .lbl {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .12em;
   text-transform: uppercase; color: var(--muted); }}
 .card .val {{ font-family: var(--mono); font-size: clamp(1rem, 15cqi, 1.55rem); font-weight: 600;
-  font-variant-numeric: tabular-nums; margin-top: .15rem; white-space: nowrap; }}
+  font-variant-numeric: tabular-nums; margin-top: .1rem; line-height: 1.6rem; white-space: nowrap; }}
 .card .sub {{ color: var(--muted); font-size: .72rem; margin-top: .1rem; }}
 .card.warn {{ border-color: color-mix(in srgb, var(--warn) 45%, transparent);
   background: color-mix(in srgb, var(--warn) 7%, var(--card)); }}
 .card.warn .val, .card.warn .lbl {{ color: var(--warn); }}
 .card.pos {{ border-color: color-mix(in srgb, var(--pos) 40%, transparent); }}
 .card.neg {{ border-color: color-mix(in srgb, var(--neg) 40%, transparent); }}
+.group-lbl .note {{ font-family: inherit; text-transform: none; letter-spacing: 0; opacity: .8; }}
 .group-lbl {{ font-family: var(--mono); font-size: var(--lbl); letter-spacing: .14em;
   text-transform: uppercase; color: var(--muted); margin: .1rem 0 .35rem; }}
 .pos {{ color: var(--pos); }} .neg {{ color: var(--neg); }} .na {{ color: var(--muted); }}
@@ -158,6 +159,7 @@ footer, #MainMenu {{ visibility: hidden; }}
 /* Tabs */
 .stTabs [data-baseweb="tab-list"] {{ gap: 1.2rem; border-bottom: 1px solid var(--border); }}
 .stTabs [data-baseweb="tab-panel"] {{ padding-top: .5rem; }}
+.stTabs [data-baseweb="tab"] {{ height: 2.1rem; padding-top: 0; padding-bottom: 0; }}
 .stTabs [data-baseweb="tab"] p {{ font-family: var(--mono); font-size: .8rem; letter-spacing: .04em; }}
 </style>
 """,
@@ -480,22 +482,19 @@ with st.container(border=True, key="zone-overview"):
             unsafe_allow_html=True,
         )
     with mcol:
-        st.markdown('<div class="group-lbl">Money</div>', unsafe_allow_html=True)
+        # Caveats live on the group label rather than under the numbers, so every
+        # pinned card is the same height without a min-height.
+        st.markdown(
+            '<div class="group-lbl">Money <span class="note">· revenue after fees · '
+            "profit naive (revenue − spend)</span></div>",
+            unsafe_allow_html=True,
+        )
         st.markdown(
             stat_grid(
                 [
                     stat_card("Total spent", money_html(total_spent if pd.notna(total_spent) else 0.0)),
-                    stat_card(
-                        "Total revenue",
-                        money_html(total_revenue if pd.notna(total_revenue) else 0.0),
-                        sub="after fees",
-                    ),
-                    stat_card(
-                        "Realized profit",
-                        money_html(profit, signed=True),
-                        sub="naive · revenue − spend",
-                        tone=profit_tone,
-                    ),
+                    stat_card("Total revenue", money_html(total_revenue if pd.notna(total_revenue) else 0.0)),
+                    stat_card("Realized profit", money_html(profit, signed=True), tone=profit_tone),
                 ],
                 3,
             ),
