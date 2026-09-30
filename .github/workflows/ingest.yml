@@ -2,12 +2,18 @@ name: Ingest ticket emails
 
 on:
   schedule:
-    # Every 6 hours.
-    - cron: "0 */6 * * *"
+    # Every hour.
+    - cron: "0 * * * *"
   workflow_dispatch: {}
 
 permissions:
   contents: write
+
+# Runs have taken up to ~24 minutes (Gemini retries); don't let a slow run
+# overlap the next one and race it on pushing transactions.db.
+concurrency:
+  group: ingest
+  cancel-in-progress: false
 
 jobs:
   ingest:
