@@ -1,0 +1,44 @@
+name: Morning sell alerts
+
+on:
+  schedule:
+    # 14:07 UTC = 8:07am Mountain (MDT). After DST ends Nov 1 this becomes
+    # 7:07am MST — move the hour to 15 to keep it at ~8am.
+    - cron: "7 14 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Treat this YYYY-MM-DD as today (blank = today, Mountain time)"
+        required: false
+        default: ""
+
+# Read-only: this job never commits, and lives in its own workflow so it
+# isn't caught up in ingest.yml's hourly schedule or its concurrency group.
+permissions:
+  contents: read
+
+jobs:
+  sell-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Send sell alert
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          ALERT_DATE: ${{ inputs.date }}
+        run: |
+          if [ -n "$ALERT_DATE" ]; then
+            python sell_alerts.py --date "$ALERT_DATE"
+          else
+            python sell_alerts.py
+          fi
